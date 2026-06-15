@@ -6,12 +6,16 @@ l'agent (guidé par `SKILL.md`) qui les fait. Ce CLI ne fournit que les opérati
 doivent être **exactes et idempotentes**, que l'agent enchaîne librement :
 
     wiki_ingest.py --config <wiki.config.json> inventory   [SOURCE] [--skip-sync] [--dry-run]
+    wiki_ingest.py --config <wiki.config.json> status      [--sync] [--dry-run]
     wiki_ingest.py --config <wiki.config.json> write-article --subject S --notion N --body-file F.md
                        [--title T] [--tags a,b] [--source raw/...#ch3 ...] [--asset /chemin ...] [--dry-run]
     wiki_ingest.py --config <wiki.config.json> finalize --source raw/<type>/<nom>.<ext> --sha <sha>
                        --articles s1/n1,s2/n2 [--status compilé|partiellement-compilé] [--skip-sync] [--dry-run]
 
 - `inventory` : worklist JSON des fichiers de contenu à (re)compiler (diff ledger) + notions existantes.
+- `status` : digest machine-lisible du statut de compilation **par source**
+  (`extrait` | `partiellement compilé` | `compilé`) + `article_count`.
+  Lit uniquement (`--skip-sync` par défaut : pas d'appel réseau).
 - `write-article` : écrit/écrase un article notion (antidoublon = replace-body, validation NFD/NFC).
 - `finalize` : MAJ `_status.md` (statut + « Articles wiki ») + ledger atomique (idempotence).
 
@@ -23,20 +27,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-# --- bootstrap : rendre le socle partagé importable (hors tests) -----------
-_SHARED = Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"
-for _cand in (os.environ.get("MIMIR_SHARED"), _SHARED):
-    if _cand and Path(_cand).is_dir() and str(_cand) not in sys.path:
-        sys.path.insert(0, str(_cand))
-        break
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+# --- bootstrap : importer le socle via le module unifié `bootstrap` ---------
+# (L'insertion de sys.path est centralisée dans `bootstrap._ensure_socle_path` :
+#  MIMIR_SHARED honoré, idempotent, fail fast sur symbole manquant.)
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"))
+import bootstrap  # noqa: E402,F401  (socle mutualisé ; voir skills/_shared-references/scripts/bootstrap.py)
 
 import config_loader  # noqa: E402
 import ledger as ledger_mod  # noqa: E402
@@ -65,6 +68,20 @@ def cmd_inventory(cfg, source: str | None, *, skip_sync: bool, dry_run: bool) ->
         raise RuntimeError("pré-sync (pull) en échec — compilation interrompue")
     led = ledger_mod.load_ledger(cfg.LEDGER)
     return inventory.select(cfg, led, source)
+
+
+# --- status ----------------------------------------------------------------
+def cmd_status(cfg, *, skip_sync: bool, dry_run: bool) -> dict:
+    """Digest machine-lisible du statut de compilation **par source** (spec
+    `compile-source` — Per-source compilation status digest).
+
+    Lit `raw/`, le ledger et `_status.md` ; ne mute rien. `--skip-sync` est la
+    valeur par défaut : un digest est une lecture, pas une synchro.
+    """
+    if not skip_sync and sync.pull(cfg) != 0:
+        raise RuntimeError("pré-sync (pull) en échec — digest statut indisponible")
+    _ = dry_run  # lecture seule : le digest n'a pas d'effet de bord
+    return inventory.status_digest(cfg)
 
 
 # --- write-article ---------------------------------------------------------
@@ -164,6 +181,17 @@ def main(argv: list[str] | None = None) -> int:
     p_inv.add_argument("--skip-sync", action="store_true")
     p_inv.add_argument("--dry-run", action="store_true")
 
+    p_st = sub.add_parser(
+        "status",
+        help="Digest machine-lisible du statut de compilation par source "
+             "(`extrait` | `partiellement compilé` | `compilé`) + `article_count`.",
+    )
+    p_st.add_argument(
+        "--sync", dest="do_sync", action="store_true",
+        help="Faire un pull avant le digest (par défaut : aucune I/O réseau).",
+    )
+    p_st.add_argument("--dry-run", action="store_true")
+
     p_wr = sub.add_parser("write-article", help="Écrit/écrase un article notion (format Karpathy).")
     p_wr.add_argument("--subject", required=True)
     p_wr.add_argument("--notion", required=True)
@@ -190,6 +218,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(data, ensure_ascii=False, indent=2))
         n = len(data["worklist"])
         print(f"{n} source(s) à compiler.", file=sys.stderr)
+        return 0
+
+    if args.cmd == "status":
+        data = cmd_status(cfg, skip_sync=not args.do_sync, dry_run=args.dry_run)
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        n = len(data["sources"])
+        print(f"{n} source(s) inspectée(s).", file=sys.stderr)
         return 0
 
     if args.cmd == "write-article":

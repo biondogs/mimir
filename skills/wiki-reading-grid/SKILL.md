@@ -7,7 +7,7 @@ description: >
   grille de lecture de cet ouvrage », « régénère la grille ». Borné à work_root.
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.5.1"
+  version: "0.6.0"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, reading-grid, navigation]
   hermes:
@@ -71,17 +71,31 @@ python scripts/wiki_reading_grid.py <generate|generate-all> …
        --source raw/pdfs/navigation-cotiere.pdf.txt --skip-sync
    ```
    Sortie JSON : `grid_path`, `linked_articles`, `unresolved_chapters` (chapitres sans article),
-   `orphan_articles` (articles sans ancre `#chK`). Le script écrit
-   `reading-grids/<slug-du-titre>.md` et met à jour la colonne « Grille » de `raw/<type>/_status.md`.
+   `orphan_articles` (articles sans ancre `#chK`), `chapters_missing_blurb` (chapitres
+   au placeholder `_à rédiger_`). Le script écrit `reading-grids/<slug-du-titre>.md`
+   et met à jour la colonne « Grille » de `raw/<type>/_status.md`.
 3. **Régénération incrémentale** — relance `generate` après chaque vague de compilation : la grille
-   est reconstruite **en entier** (idempotent ; seul `created` est préservé). Un chapitre sans
-   article affiche « travail restant », pas une erreur. Un lien vers un article non encore compilé
+   est reconstruite **en entier** (idempotent ; seul `created` est préservé). À la
+   régénération, les phrases éditoriales déjà présentes (zones `<!-- blurb:… -->`)
+   sont **extraites** puis **réinjectées** par appariement sur l'`order` du
+   `toc.json` (tolérant à un léger renommage de titre) — la charpente est
+   recalculée, jamais la prose. Un chapitre sans article affiche `_à rédiger_`
+   entre les marqueurs, pas une erreur. Un lien vers un article non encore compilé
    reste tel quel — l'**audit** `wiki-index` le remontera.
 4. **Tout régénérer** — pour un rebuild complet (pdfs + epubs ; le web sans chapitrage est ignoré) :
    ```sh
    python scripts/wiki_reading_grid.py --config CFG generate-all --skip-sync
    ```
-5. **Post-sync** — implicite (stub en P3), sauf `--skip-sync`.
+5. **Rédaction des phrases éditoriales (étape agent)** — la charpente est
+   régénérée par le skill ; les **phrases** sont sémantiques. Après un
+   `generate` (ou une campagne `wiki-migration v3→v4`), la sortie JSON
+   liste `chapters_missing_blurb`. L'agent **rédige une phrase courte
+   (une ligne) par chapitre** listé, en éditant directement la zone
+   `<!-- blurb:début --> … <!-- blurb:fin -->` du fichier généré, puis
+   relance `generate` (idempotent : les phrases sont préservées, la
+   charpente est recalculée). **Aucun script ne juge la qualité des
+   phrases** (revue humaine, par construction).
+6. **Post-sync** — implicite (stub en P3), sauf `--skip-sync`.
 
 ## Format produit
 
@@ -99,6 +113,10 @@ created: 2026-06-04
 
 ## Ch. 3 — Se positionner
 
+<!-- blurb:début -->
+Comment fixer sa position en mer par recoupement de relèvements.
+<!-- blurb:fin -->
+
 Lire dans l'ordre :
 
 1. [[navigation/relevement]]
@@ -107,6 +125,14 @@ Lire dans l'ordre :
 ⬅ [[#Ch. 2 — Instruments]] | ➡ [[#Ch. 4 — Marées]]
 ```
 
+> **Format hybride** : la **charpente** (ordre des chapitres, liens, navigation) est
+> déterministe (ne dépend que du `toc.json` et du ledger). La **phrase**
+> entre marqueurs `<!-- blurb:… -->` est éditoriale, écrite par l'agent,
+> **préservée** d'une régénération à l'autre. Sans phrase, un chapitre
+> sans article porte `_à rédiger_` entre les marqueurs. La phrase n'est
+> **jamais** une recopie du corps d'un article (la règle d'or « aucun
+> dump brut » reste entière) — c'est une **cadrage court** (une ligne).
+>
 > Les liens Précédent/Suivant pointent vers le **texte exact** du titre de chapitre (Obsidian
 > résout `[[#…]]` par le texte du titre) : titre et lien dérivent de la même fonction, donc aucun
 > lien interne cassé.
@@ -115,5 +141,5 @@ Lire dans l'ordre :
 
 - Gabarit de grille : [`../_shared-references/FRONTMATTERS.md`](../_shared-references/FRONTMATTERS.md) §2.
 - Croisement toc/ledger/ancres, ancrage chapitre : [`../_shared-references/scripts/`](../_shared-references/scripts/) (`article_index.py`, `wikilinks.py`, `ledger.py`).
-- Conventions liens/Mermaid, slug/NFD-NFC : [`../_shared-references/CONVENTIONS.md`](../_shared-references/CONVENTIONS.md) §4, §8.
-- Spécification : `SPEC.md` §8.
+- Liens/Mermaid + slug/NFD-NFC : spec `reading-grid` (ordre canonique, ancres alphanumériques) + spec `mimir-invariants::mermaid-mandatory` + spec `mimir-invariants::nfd-nfc-normalization`.
+- Spécification : `specs/reading-grid` (toc-order-is-canonical, chapter-anchor-flexible).

@@ -12,10 +12,15 @@
   seule comparaison viable.
 - **Verrou hors zone synchronisée** (`~/.cache/mimir/wiki-sync.lock`) : sinon il se
   synchronise et le verrou d'une machine bloque les autres.
-- **`--resync` non automatique par défaut** : sans état antérieur, le backend bascule sur un
-  bootstrap unidirectionnel et signale qu'un `--resync` manuel est requis. Pour s'amorcer
-  seul (machine distante, agent piloté par le JSON), poser `sync.rclone.auto_resync: true`
-  (cf. « Amorçage automatique » plus bas).
+- **Warm-up listing avant `bisync`** : `rclone lsf <remote> --recursive` (résultat
+  jetable) force kDrive à rafraîchir son cache de listing, sans quoi les fichiers
+  entrants peuvent être manqués au premier passage.
+- **Retry borné + backoff exponentiel** sur erreurs transitoires (5xx, timeout,
+  `connection refused`, etc.) — au plus 3 tentatives (1s, 2s, 4s).
+- **Self-heal `bisync --resync` (union sans perte)** quand bisync signale « must run
+  --resync ». **Aucun** `rclone sync` unidirectionnel destructif n'est tenté en repli
+  silencieux (il pouvait effacer côté distant des fichiers entrants au lieu de les
+  récupérer).
 
 ## Commande bisync (pull/push)
 
@@ -32,24 +37,29 @@ pas de hash commun, pas de modtime fiable).
 ## Premier run / état bisync perdu
 
 `bisync` exige un `--resync` initial ; sans état antérieur il refuse (« Must run
---resync »). Le backend bascule alors sur un **bootstrap unidirectionnel** :
+--resync »). Le backend **s'auto-répare** en relançant la même commande avec
+`--resync` ajouté (mêmes flags, **plus** `--resync`, **sans** `--resync-mode`) :
 
 ```
-rclone sync <local> <remote> --size-only --copy-links --filter-from filters.txt
+rclone bisync <local> <remote> … --resync --filter-from filters.txt
 ```
 
-puis **signale** (warning) qu'un `rclone bisync --resync` manuel doit être lancé pour
-établir proprement l'état bisync.
+L'absence de `--resync-mode` préserve `--conflict-loser pathname --conflict-suffix
+sync-conflict` : un fichier divergent des deux côtés produit **deux copies**
+(union sans perte) au lieu d'un écrasement silencieux. `--resync` est **bidirectionnel**,
+donc les suppressions restent propagées — pas le comportement destructif du
+`rclone sync` unidirectionnel.
 
-### Amorçage automatique (opt-in)
+> **Replis successifs (en cas d'échec du `--resync`) :**
+> 1. Retry avec backoff sur erreur transitoire (jusqu'à 3 tentatives).
+> 2. Si l'échec persiste, le backend **renvoie un code non nul** et **ne tente
+>    PAS** de `rclone sync` unidirectionnel destructif en repli silencieux.
+>    L'opérateur tranche, l'état local est préservé.
 
-Avec `sync.rclone.auto_resync: true`, le backend amorce lui-même l'état bisync sur ce cas :
-il lance `rclone bisync … --resync` (mêmes flags que la passe normale, **plus** `--resync`).
-On ne passe **pas** de `--resync-mode` : `--conflict-loser pathname --conflict-suffix
-sync-conflict` reste actif, donc un fichier divergent des deux côtés produit **deux copies**
-(union sans perte) au lieu d'un écrasement silencieux. Si le `--resync` échoue, le backend
-retombe sur le bootstrap unidirectionnel ci-dessus (filet de sécurité). C'est le réglage
-attendu quand l'agent doit « se débrouiller seul depuis le JSON » sans rclone manuel.
+> **`auto_resync` (clé de config) est obsolète.** Le self-heal `bisync --resync`
+> (union) est désormais **inconditionnel** (spec `sync-vault` — modification du
+> backend rclone). La clé est **conservée** dans le config pour ne pas casser
+> les configs existants, mais n'a plus d'effet.
 
 ### Auth pilotée par le JSON (opt-in)
 
@@ -81,8 +91,8 @@ sans `rclone config` manuel :
 > absolu** des deux côtés. Le backend utilise `cfg.work_root`, que `config_loader` **résout
 > via `realpath()`** (symlinks et `..` résolus — ex. sur macOS `/tmp` → `/private/tmp`). Le
 > `--resync` manuel doit donc viser **exactement ce chemin résolu**, sinon bisync ne
-> retrouve pas l'état (« cannot find prior listings ») et le backend retombe indéfiniment
-> sur le bootstrap unidirectionnel. En cas de doute :
+> retrouve pas l'état (« cannot find prior listings ») et le backend abandonne (sans
+> `rclone sync` destructif en repli silencieux). En cas de doute :
 > `python config_loader.py wiki.config.json` affiche le `WORK_ROOT` résolu à utiliser.
 
 ## Validation anti-listing-stale (le piège majeur)
@@ -93,10 +103,38 @@ le log dit « Bisync successful »). `validate` ne fait donc **pas** confiance a
 
 1. compter les fichiers locaux (hors `.git/`, `.obsidian/`, `.wiki/`, `.DS_Store`) ;
 2. compter les fichiers distants via `rclone lsf <remote> --recursive --files-only` ;
-3. si l'écart dépasse la tolérance (~5, marge pour les exclusions), **re-pousser** via
-   `rclone sync` (sans la garde `--max-delete`, donc autorisé à re-pousser ce que le cache
-   croit présent) puis revérifier `lsf`. Réessayer avec un court `sleep` si le cache met
-   quelques secondes à se réactualiser.
+3. si l'écart dépasse la tolérance (~5, marge pour les exclusions), **re-réconcilier**
+   (warm-up, puis `bisync` avec self-heal `--resync` si besoin) puis revérifier `lsf`.
+   Pas de `rclone sync` unidirectionnel destructif comme recovery (cf. spec
+   `sync-vault`).
+
+## Warm-up listing (avant chaque `bisync`)
+
+```
+rclone lsf <remote> --recursive
+```
+
+Émis systématiquement avant chaque `bisync` (pull et push) — le résultat est **ignoré**
+(on ne compte pas, on ne fait rien avec) ; seul effet de bord : forcer kDrive à
+rafraîchir son cache. Corrige le symptôme « fichiers entrants invisibles au premier
+run ».
+
+## Retry borné + backoff (erreurs transitoires)
+
+Patterns détectés (sous-chaînes minuscules dans stdout/stderr cumulés) :
+
+```
+5xx, timeout, timed out, temporarily unavailable, try again,
+connection reset, connection refused, i/o timeout, deadline exceeded,
+service unavailable, bad gateway, gateway timeout, network is unreachable
+```
+
+Backoff exponentiel : 1s, 2s, 4s (3 tentatives max). Erreur non transitoire (config
+invalide, fichier introuvable, etc.) → pas de retry, propagation immédiate.
+
+> Les warnings du backend agrègent **une** entrée par classe d'événement :
+> « `bisync` tentative 1/3 échouée (transient) — retry dans 1s. » — jamais une par
+> ligne de log brute.
 
 ## Filtres (`filters.txt`)
 
@@ -110,6 +148,7 @@ ligne d'exclusion **avant** le prochain sync, sinon rclone propage la corbeille 
 - Remote `rclone config` (type `webdav`, vendor `other`, URL + mot de passe d'application
   kDrive) — **ou** `sync.rclone.remote_setup` + le secret en variable d'env, et l'agent le
   configure seul (cf. « Auth pilotée par le JSON »).
-- `--resync` initial manuel pour établir l'état bisync — **ou** `sync.rclone.auto_resync:
-  true` pour l'amorçage automatique.
-- Un seul synchroniseur par machine (désactiver l'auto-sync Remotely Save d'Obsidian).
+- **Un seul synchroniseur par machine** : auto-sync Remotely Save **désactivé** (cf.
+  [`OBSIDIAN_REMOTELY_SAVE.md`](OBSIDIAN_REMOTELY_SAVE.md)).
+- En mode `auto` (cf. SKILL.md) : aucun setup rclone manuel requis si Obsidian gère la
+  synchro ; rclone n'est invoqué qu'en repli (Obsidian indisponible ou validate KO).

@@ -47,7 +47,17 @@ class Asset:
 
 @dataclass(frozen=True)
 class ExtractResult:
-    """Résultat d'extraction d'une source — sérialisé ensuite dans raw/<type>/."""
+    """Résultat d'extraction d'une source — sérialisé ensuite dans raw/<type>/.
+
+    `source_content` (optionnel) porte la **matière brute immuable** de la
+    source (réponse HTML brute pour le web) — analogue du binaire `.pdf`. Le
+    `.md`/`.txt` est la **dérivation** re-générable à partir de
+    `source_content` (jamais de re-fetch réseau requis).
+
+    Pour PDF/EPUB, `source_content` est `None` : le binaire est déjà un
+    fichier séparé (`<base>.pdf`/`.epub`) déposé par l'orchestrateur depuis
+    l'original (cf. `_place_binary`).
+    """
 
     raw_content: str  # texte (.pdf.txt/.epub.txt) OU markdown inline (web)
     content_ext: Literal["pdf.txt", "epub.txt", "md"]
@@ -55,3 +65,9 @@ class ExtractResult:
     structure: list[Chapter]  # chapitrage ordonné (peut être [])
     assets: list[Asset] = field(default_factory=list)
     doc_type: Literal["pdfs", "epubs", "web"] = "pdfs"
+    #: Matière brute immuable de la source (HTML web ; None pour PDF/EPUB
+    #: qui portent déjà leur binaire dans un sidecar séparé). Quand définie,
+    #: l'orchestrateur l'écrit sous `<base>.<source_ext>` (immuable, suffixage
+    #: `-N` partagé avec les autres fichiers du triplet).
+    source_content: bytes | None = None
+    source_ext: Literal["html", ""] = ""

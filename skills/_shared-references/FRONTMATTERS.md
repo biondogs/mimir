@@ -1,6 +1,9 @@
 # Gabarits de frontmatter & formats — Mimir
 
-> Référence des en-têtes YAML et sidecars. Source : [`SPEC.md`](../../__projet__/SPEC.md) §4–§8.
+> Référence des en-têtes YAML et sidecars. Source normative :
+> `specs/compile-source::karpathy-article-format`,
+> `specs/reading-grid` (gabarit de grille),
+> `specs/audit-index` (`_status.md` & INDEX par sujet).
 
 ---
 

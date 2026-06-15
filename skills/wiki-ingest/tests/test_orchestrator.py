@@ -173,3 +173,62 @@ def test_skip_sync(cfg, monkeypatch):
     assert calls["push"] == 0                             # finalize skippé
     wiki_ingest.cmd_finalize(cfg, e["content_path"], e["sha256"], ["navigation/relevement"], skip_sync=False)
     assert calls["push"] == 1
+
+
+# --- digest de statut par source (spec `compile-source`) -------------------
+def test_status_extrait_quand_sidecars_et_zero_article(cfg):
+    """Sidecars (.txt + .toc.json) présents, 0 article dans le ledger
+    → statut `extrait`, compte 0. **Jamais** `compilé`."""
+    rel = _seed_pdf(cfg)
+    digest = wiki_ingest.cmd_status(cfg, skip_sync=True, dry_run=False)
+    assert "sources" in digest
+    row = next(s for s in digest["sources"] if s["content_path"] == rel)
+    assert row["doc_type"] == "pdfs"
+    assert row["status"] == "extrait"                    # pas compilé !
+    assert row["article_count"] == 0
+
+
+def test_status_compile_apres_finalize(cfg, tmp_path):
+    """Source compilée via finalize → statut `compilé`, compte = N articles."""
+    _seed_pdf(cfg)
+    e = wiki_ingest.cmd_inventory(cfg, None, skip_sync=True, dry_run=False)["worklist"][0]
+    r1 = _write(cfg, "navigation", "Relèvement", "# Relèvement\n\nx\n", tmp_path,
+                sources=[e["content_path"] + "#ch1"])
+    r2 = _write(cfg, "navigation", "Triangulation", "# Triangulation\n\ny\n", tmp_path,
+                sources=[e["content_path"] + "#ch1"])
+    wiki_ingest.cmd_finalize(
+        cfg, e["content_path"], e["sha256"],
+        [r1.wikilink, r2.wikilink], skip_sync=True,
+    )
+    digest = wiki_ingest.cmd_status(cfg, skip_sync=True, dry_run=False)
+    row = next(s for s in digest["sources"] if s["content_path"] == e["content_path"])
+    assert row["status"] == "compilé"
+    assert row["article_count"] == 2
+
+
+def test_status_partiellement_compile(cfg, tmp_path):
+    """Source finalisée avec statut `partiellement compilé` → son digest
+    reste `partiellement compilé` (distinct de `compilé`)."""
+    _seed_pdf(cfg, base="brevet-cotiere")
+    e = wiki_ingest.cmd_inventory(cfg, None, skip_sync=True, dry_run=False)["worklist"][0]
+    r = _write(cfg, "brevet", "Relèvement", "# Relèvement\n\nx\n", tmp_path,
+               sources=[e["content_path"] + "#ch1"])
+    wiki_ingest.cmd_finalize(
+        cfg, e["content_path"], e["sha256"],
+        [r.wikilink], status="partiellement compilé", skip_sync=True,
+    )
+    digest = wiki_ingest.cmd_status(cfg, skip_sync=True, dry_run=False)
+    row = next(s for s in digest["sources"] if s["content_path"] == e["content_path"])
+    assert row["status"] == "partiellement compilé"
+    assert row["article_count"] == 1
+
+
+def test_status_skip_sync_par_defaut(cfg, monkeypatch):
+    """`cmd_status` ne déclenche AUCUN appel réseau (pull/push) par défaut —
+    un digest est une lecture, pas une synchro."""
+    _seed_pdf(cfg)
+    calls = {"pull": 0, "push": 0}
+    monkeypatch.setattr(wiki_ingest.sync, "pull", lambda c: calls.__setitem__("pull", calls["pull"] + 1) or 0)
+    monkeypatch.setattr(wiki_ingest.sync, "push", lambda c: calls.__setitem__("push", calls["push"] + 1) or 0)
+    wiki_ingest.cmd_status(cfg, skip_sync=True, dry_run=False)
+    assert calls["pull"] == 0 and calls["push"] == 0

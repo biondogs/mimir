@@ -1,115 +1,79 @@
-# Conventions partagées — Mimir
+# Conventions partagées — Mimir (digest pointeur)
 
-> Socle commun aux 5 skills `wiki-*`. Source de vérité : [`SPEC.md`](../../__projet__/SPEC.md) (v0.6).
-> Ce fichier mutualise les conventions pour éviter le gonflement des `SKILL.md`.
-
----
-
-## 1. Racine de travail & confinement `[SPEC §2]`
-
-Un seul `wiki.config.json` (dans le `work_root`) définit tout. `work_root` est la **racine unique** ;
-`RAW`, `WIKI`, `READING_GRIDS`, `LEDGER` en dérivent (résolus par
-[`scripts/config_loader.py`](scripts/config_loader.py)).
-
-- **Mode A — vault complet** : `work_root` = racine du vault Obsidian. Détecté par la présence d'un
-  dossier `.obsidian/`. `raw/`, `wiki/`, `reading-grids/`, `.wiki/` vivent à la racine du vault.
-- **Mode B — répertoire dédié** : `work_root` = un sous-répertoire `[base_repertoire]`. **Tout** Mimir
-  vit dans ce répertoire ; le reste du vault n'est jamais touché. (C'est le cas de
-  [`wiki.config.example.json`](../../wiki.config.example.json), qui pointe sur `…/02 - second cerveau`.)
-
-La **résolution des chemins est identique** dans les deux modes — seul le périmètre de synchro change (§10).
-
-> **Règle d'or — confinement.** Toute opération (lecture, écriture **et** synchro) est bornée à
-> `work_root`. On ne crée/modifie/synchronise jamais rien **hors** de cette racine. Implémentée par
-> [`scripts/guard.py`](scripts/guard.py) (`assert_within`, `safe_path`) : tout chemin d'écriture passe
-> par cette garde. Normalisation `realpath` + `commonpath` ⇒ les `..` et symlinks d'évasion sont refusés.
-
-Tous les chemins manipulés sont **absolus** (les sessions cron Hermes n'ont pas de `cwd` garanti).
+> **Ce fichier est un digest pointeur** (≤ 50 lignes), **pas** la source
+> de vérité normative. Toute règle prescriptive vit dans
+> `openspec/specs/<cap>/spec.md`.
+>
+> On lit ce fichier pour savoir *où chercher*. On lit les specs pour
+> savoir *ce qui est garanti*.
+>
+> Migration opérée lors du change `setup-openspec-as-design-tool`
+> (cf. `openspec/changes/.../design.md` § 3).
 
 ---
 
-## 2. Slugs ASCII kebab-case `[SPEC §12.3]`
+## 1. Racine de travail & confinement
 
-- Les **noms de fichiers** sont des slugs **ASCII kebab-case** ; le titre affichable (avec accents)
-  vit dans le frontmatter, jamais dans le nom de fichier.
-- Helper unique : [`scripts/slug.py`](scripts/slug.py) → `slugify("Baromètre") == "barometre"`.
-  (L'ancien `slugify` des `kb-*` gardait les accents — `\w` étant Unicode ; corrigé via décomposition NFKD.)
+> Norme : `specs/mimir-invariants/spec.md` § `confinement` — toute
+> opération (lecture, écriture, synchro) bornée à `work_root`.
+> Implémenté par `skills/_shared-references/scripts/guard.py`
+> (`assert_within`, `safe_path`, normalisation `realpath` + `commonpath`).
+> Test : `test_guard.py` (4 cas) + 4 tests croisés dans les skills.
 
-## 3. NFD / NFC `[SPEC §12.2]`
+## 2. Slugs ASCII kebab-case
 
-macOS/APFS stocke les noms de fichiers en **NFD** (accents décomposés), les wikilinks Obsidian sont en
-**NFC** (composés). Comparer sans normaliser ⇒ faux « liens morts ». Toujours comparer via
-`slug.same_file(a, b)` ; après chaque écriture, vérifier le match exact wikilink ↔ nom de fichier.
+> Norme : `specs/mimir-invariants/spec.md` § `nfd-nfc-normalization` —
+> noms de fichiers ASCII kebab-case, titre affichable dans le frontmatter.
+> Helper : `skills/_shared-references/scripts/slug.py`.
 
-## 4. Mermaid `[SPEC §5.3, §12.6]`
+## 3. NFD / NFC
 
-Tout schéma est en **Mermaid** (jamais d'ASCII art). Pour citer un wikilink dans un nœud :
-`A["[[navigation/relevement]]"]` — **jamais** `[[[…]]]` (erreur de parsing).
+> Norme : `specs/mimir-invariants/spec.md` § `nfd-nfc-normalization` —
+> comparer via `slug.same_file(a, b)`, jamais en `str.__eq__`.
+> Test : `test_article_writer::test_nfd_nfc_slug_ascii`,
+> `test_wikilinks.py` (résolution).
 
----
+## 4. Mermaid obligatoire
 
-## 5. Immutabilité de `raw/` `[SPEC §4.2, §12.1]`
+> Norme : `specs/mimir-invariants/spec.md` § `mermaid-mandatory` —
+> tout schéma en Mermaid, jamais en ASCII art. Wikilink dans un nœud :
+> `A["[[navigation/relevement]]"]` (verbatim).
+> Tests : `test_article_writer::test_mermaid_wikilink_verbatim`
+> (écriture) + 1 test squelette à venir (présence).
 
-- Une source déposée n'est **jamais écrasée ni modifiée** ; re-dépôt ⇒ suffixer (`-2`, `-3`).
-- Seule mutation tolérée dans `raw/` : la colonne **statut/SHA** de `_status.md`.
-- L'ingestion **web** passe par un *staging* hors `raw/` (réversible) **avant** commit définitif.
-- Les **binaires** (PDF/EPUB) transitent par `_inbox/` (dropzone **synchronisée**, à la racine de
-  `work_root`) : `wiki-extract` les y consomme sous **verrou** `wiki-sync`, écrit dans `raw/<type>/`,
-  puis **déplace** le binaire hors `_inbox/`. Le move `_inbox/`→`raw/` n'est pas une mutation de `raw/`.
+## 5. Immutabilité de `raw/`
+
+> Norme : `specs/mimir-invariants/spec.md` § `append-only-raw` —
+> une source n'est jamais écrasée, re-dépôt ⇒ suffixe `-2` (partagé
+> entre binaire et sidecars). Seule mutation tolérée : colonne statut
+> de `_status.md`. Web : staging réversible avant commit.
+> Tests : `test_orchestrator_extract::test_suffixage_*`,
+> `test_iohelpers::test_unique_suffixed_*`.
 
 ## 6. Frontmatters & formats
 
-Les gabarits (article notion, grille de lecture, `.toc.json`, `_status.md`, clipping web) sont dans
-[`FRONTMATTERS.md`](FRONTMATTERS.md). Format d'article = **Karpathy** (H1 / résumé / Définition /
-Points clés / Relations / Sources) ; **jamais** de dump brut d'une source.
+> Norme : gabarits dans `skills/_shared-references/FRONTMATTERS.md`
+> (article notion / grille / `.toc.json` / `_status.md` / clipping web).
+> Format d'article = **Karpathy** (H1 / résumé / Définition / Points
+> clés / Relations / Sources). Pas de dump brut.
+> Specs : `compile-source::karpathy-article-format`,
+> `mimir-invariants::no-dump-in-wiki`.
 
-## 7. Synchro (rappel pour Phase 4) `[SPEC §10]`
+## 7. Synchro
 
-Conventions à implémenter en Phase 4 (non codées en P0) :
+> Norme : `specs/sync-vault/spec.md` — backends `rclone | git | noop`,
+> verrou **hors** `work_root` (default `~/.cache/mimir/…`), validation
+> post-sync obligatoire, scope `raw/ + wiki/ + reading-grids/`.
+> Filtres : `filters.txt`. Cycle : `lock → pull → push → validate → unlock`.
+> Tests : `test_sync_lock.py` (5 cas), `test_sync_factory.py`,
+> `test_sync_rclone.py::test_validate_repousse_si_ecart`,
+> `test_sync_git.py::test_push_exclut_le_ledger_hors_scope`.
 
-- **Verrou hors zone synchronisée** (`~/.cache/mimir/…`) — sinon il se synchronise et bloque les autres
-  machines (vigilance §12.9).
-- **rclone** : `--size-only` **obligatoire** (WebDAV/kDrive sans modtime fiable ; `--checksum` est
-  catastrophique) ; `bisync` + fallback `sync` ; `validate` anti-listing-stale. Filtres : voir
-  [`filters.txt`](../../filters.txt).
-- **git** : lockfile ; `pull --rebase` ; commit/push scopé (`raw/`, `wiki/`, `reading-grids/`).
+## 8. Pièges transverses & Open Issues
 
----
-
-## 8. Les 14 pièges `[SPEC §12]`
-
-1. **Immutabilité raw** : jamais d'écrasement ; seul statut/SHA bouge ; suffixage `-2` ; staging web réversible.
-2. **NFD/NFC** : vérifier le match exact wikilink ↔ nom de fichier après chaque écriture.
-3. **Slugs ASCII** kebab-case dans les noms ; titre affichable dans le frontmatter.
-4. **Validation post-sync obligatoire** : bisync/sync renvoient 0 même sur listing kDrive *stale*.
-5. **OCR auto** : tenter la couche texte, sinon basculer OCR (`ocrmypdf`/`tesseract`) ; tracer `ocr:true` ;
-   vérifier avant compilation — ne jamais inventer le contenu d'un scan.
-6. **Mermaid + wikilinks** : `["[[notion]]"]`, jamais `[[[…]]]`.
-7. **Sessions cron sans cwd** : chemins absolus ancrés sur `work_root`, commandes inline.
-8. **Confinement à `work_root`** : aucun effet de bord hors de cette racine.
-9. **Verrou hors zone synchronisée**.
-10. **Frontmatter non-standard** → déplacer sous `metadata` ; valider (`validate_skills.py` / `skills-ref`).
-11. **`skill_manage(create)` ignore `external_dirs`** (#22236) → créer via `write_file`.
-12. **Ledger atomique** (tmp + rename), **hors sync** ; si corrompu, repartir de `{}` (idempotent).
-13. **Grille = liens ordonnés**, pas de duplication ; liens non résolus = travail restant visible.
-14. **Double `_assets`** : un par sujet (wiki) **et** un par type (raw) — ne pas centraliser ; préfixer si collision.
-
-## 9. Pièges battle-tested (compilation d'un gros PDF) `[v0.6.0]`
-
-Retours de la 1ère compilation d'un guide à chapitres codés (R1-R9, G1-G6, C1-C2) :
-
-- **Ledger sans préfixe `wiki/`** : les wikilinks du ledger (`finalize --articles`) et de la
-  colonne « Articles wiki » sont des `sujet/notion` **sans** préfixe. `load_article` concatène
-  `cfg.WIKI / wikilink` : un `wiki/` résiduel donne `wiki/wiki/…` (article introuvable → grille à
-  **0 article lié**). `finalize` strippe désormais le préfixe ; `load_article` le tolère.
-- **`wiki-index regenerate` ne touche JAMAIS le ledger** (écrit uniquement par `wiki-ingest
-  finalize`). Si la grille « repasse à 0 » après un `regenerate`, la cause est un **re-`finalize`**
-  intermédiaire avec des articles préfixés `wiki/`, pas `regenerate`. Ne pas ajouter de workaround.
-- **Ancre de chapitre `#chK`** : `K` est soit un **numéro** (`#ch3`) soit un **code d'ouvrage**
-  (`#chR2`, `#chG3`). Dans tous les cas, `K` doit matcher le champ `order` du `toc.json`. L'**ordre
-  des chapitres dans le `toc.json` fait foi** (ordre de lecture) — la grille ne le réordonne pas.
-- **Cibles de wikilink toujours en slug ASCII** : un `[[réglementation/relèvement]]` accentué ne
-  résout pas. L'audit `wiki-index` **suggère** la forme slugifiée (`reglementation/relevement`) ;
-  attention aux **doublons macOS** (NFD/NFC) si un fichier accentué a été créé à la main.
-- **`_inbox/` tolère les intrus** : un `README.md`/`.txt` est **ignoré** (warning), il
-  n'interrompt plus le scan ; seuls `.pdf`/`.epub` sont extraits.
+> Les anciens « 14 pièges » (ancienne section `§12` d'une spec
+> d'architecture **supprimée** lors du passage à OpenSpec) sont
+> maintenant **dispersés** entre les 7 specs (notamment
+> `mimir-invariants` + Open Issues par capability). Si un piège connu
+> n'est couvert par *aucun* spec, c'est un **Open Issue** à formaliser
+> dans la capability correspondante — la liste n'est plus centralisée.

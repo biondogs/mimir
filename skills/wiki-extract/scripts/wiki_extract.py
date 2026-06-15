@@ -24,19 +24,20 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-# --- bootstrap : rendre le socle partagé importable (hors tests) -----------
-_SHARED = Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"
-for _cand in (os.environ.get("MIMIR_SHARED"), _SHARED):
-    if _cand and Path(_cand).is_dir() and str(_cand) not in sys.path:
-        sys.path.insert(0, str(_cand))
-        break
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+# --- bootstrap : importer le socle via le module unifié `bootstrap` ---------
+# (L'insertion de sys.path est centralisée dans `bootstrap._ensure_socle_path` :
+#  MIMIR_SHARED honoré, idempotent, fail fast sur symbole manquant.)
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"))
+import bootstrap  # noqa: E402,F401  (socle mutualisé ; voir skills/_shared-references/scripts/bootstrap.py)
 
 import config_loader  # noqa: E402
 import iohelpers  # noqa: E402
 import slug  # noqa: E402
 import status_table  # noqa: E402
+from frontmatter import parse_frontmatter  # noqa: E402
 from guard import safe_path  # noqa: E402
 
 import sync  # noqa: E402  (moteur de synchro partagé : lock/pull/push)
@@ -46,6 +47,15 @@ from extractors.base import ExtractorError  # noqa: E402
 
 _BIN_EXT = {"pdfs": "pdf", "epubs": "epub"}  # type -> extension binaire ; web = aucun
 _SKIP_NAMES = {".DS_Store"}
+
+# Pointeur vers la procédure manuelle de reconstruction de TOC (signal consultatif,
+# injecté dans le `toc.json` des PDF sans chapitrage natif). Le texte est court pour
+# rester dans la philosophie Mimir : la machine NE RECONSTRUIT PAS, elle SIGNALE.
+_TOC_REBUILD_HINT = (
+    "Aucune TOC native extraite. Reconstruire manuellement depuis le texte "
+    "(recherche de \"CONTENTS\" / \"SOMMAIRE\" en clair), puis relancer "
+    "wiki-extract en re-déposant le binaire."
+)
 
 
 @dataclass
@@ -93,6 +103,36 @@ def _web_frontmatter(metadata: dict) -> str:
     )
 
 
+def _find_ingested_url(type_dir: Path, url: str) -> str | None:
+    """Détermine si l'URL a déjà été ingérée sous `type_dir/<slug>.md` (web).
+
+    Scanne les clippings existants (non récursif : `raw/web/*.md`) et compare leur
+    `source:` du frontmatter à `url` (strip des guillemets opéré par
+    `parse_frontmatter`). Renvoie le nom de fichier matché ou `None`.
+
+    C'est un **pré-filtre** à la dédup SHA de contenu : un même article re-clippé
+    par Obsidian Web Clipper / MarkDownload produit un frontmatter légèrement
+    différent (date, métadonnées) → SHA différent → sans ce pré-filtre, deux
+    articles wiki naissent pour une seule URL. La dédup SHA reste la règle pour
+    PDF/EPUB (les webbins ne portent pas de SHA pertinent côté URL).
+    """
+    if not url or not type_dir.is_dir():
+        return None
+    for md in type_dir.glob("*.md"):
+        try:
+            front, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        existing = front.get("source")
+        if not isinstance(existing, str):
+            continue
+        # parse_frontmatter a déjà strippé les guillemets simples/doubles ;
+        # on reste tolérant à toute quote résiduelle (sécurité).
+        if existing.strip().strip('"').strip("'") == url:
+            return md.name
+    return None
+
+
 # --- placement du binaire / dédup -----------------------------------------
 def _place_binary(src: Path, dest: Path, *, from_inbox: bool, work_root: Path) -> None:
     """Dépose le binaire dans raw/ : move depuis `_inbox/`, copie sinon (préserve la source)."""
@@ -120,6 +160,20 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
 
     content_sha = iohelpers.sha256_text(result.raw_content)
 
+    # --- dédup par URL source (web uniquement, AVANT la dédup SHA) ---------
+    # Un même article re-clippé (Obsidian Web Clipper / MarkDownload) varie son
+    # frontmatter → SHA différent. La règle d'or : la première copie ingérée gagne
+    # (`raw/` est append-only) ; on n'écrase pas, on signale le doublon d'URL.
+    if doc_type == "web":
+        url = result.metadata.get("source") or (source if extractors.is_url(source) else "")
+        if url and (existing := _find_ingested_url(type_dir, url)):
+            if from_inbox and not dry_run:
+                Path(source).unlink(missing_ok=True)  # binaire re-déposé supprimé
+            return Outcome(
+                str(source), doc_type, "skipped_duplicate",
+                message=f"URL déjà ingérée ({existing})",
+            )
+
     # --- déduplication par SHA de contenu ---------------------------------
     rows = status_table.load_status(type_dir / "_status.md")
     if content_sha in status_table.known_shas(rows):
@@ -131,7 +185,12 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
     base = _slug_base(source, result)
     if doc_type == "web":
         base = f"{base}-{_today():%Y%m%d}"
+        # Le triplet web = `<slug>-<date>.html` (matière immuable) +
+        # `<slug>-<date>.md` (markdown dérivé). Le suffixage `-N` est
+        # partagé entre les deux (cf. palier v2→v3 `vault-migration`).
         exts = [result.content_ext]
+        if result.source_content is not None and result.source_ext:
+            exts = [result.source_ext] + exts
     else:
         exts = [_BIN_EXT[doc_type], result.content_ext, "toc.json"]
     final_base = iohelpers.unique_suffixed_base(type_dir, base, exts)
@@ -143,19 +202,33 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
         return Outcome(str(source), doc_type, "extrait", content_path, suffixed, "(dry-run)")
 
     # --- écritures (ordre critique : assets -> contenu -> toc -> statut) ---
+    # Tous les assets (web inclus) sont désormais regroupés par source dans un
+    # sous-répertoire `_assets/<base>/<file>` (cf. palier v1→v2 pour PDF/EPUB,
+    # palier v2→v3 pour le web — le regroupement est uniforme côté extraction).
     assets_dir = type_dir / cfg.ASSETS_DIRNAME
     raw_content = result.raw_content
     for asset in result.assets:
-        asset_name = f"{final_base}-{asset.filename}"
-        iohelpers.atomic_write_bytes(assets_dir / asset_name, asset.data, work_root=work_root)
+        # Regroupement par source, pour tout type (cohérence post-migration v1→v2 et v2→v3).
+        asset_path = assets_dir / final_base / asset.filename
+        iohelpers.atomic_write_bytes(asset_path, asset.data, work_root=work_root)
         if asset.original_ref:  # web : réécrire le lien en relatif
-            rel = f"{cfg.ASSETS_DIRNAME}/{asset_name}"
+            rel = f"{cfg.ASSETS_DIRNAME}/{asset_path.relative_to(assets_dir).as_posix()}"
             raw_content = raw_content.replace(asset.original_ref, rel)
 
     if doc_type == "web":
         raw_content = _web_frontmatter(result.metadata) + raw_content
 
     iohelpers.atomic_write_text(content_path, raw_content, work_root=work_root)
+
+    # --- source immuable (web : .html brut à côté du .md dérivé) ---------
+    # Analogue du `.pdf` binaire : la matière brute est conservée à côté du
+    # dérivé, et le `.md` peut être re-calculé à partir du `.html` sans
+    # refetch (cf. palier `vault-migration` v2→v3, spec `extract-source`).
+    if doc_type == "web" and result.source_content is not None and result.source_ext:
+        source_path = type_dir / f"{final_base}.{result.source_ext}"
+        iohelpers.atomic_write_bytes(
+            source_path, result.source_content, work_root=work_root
+        )
 
     if doc_type != "web":
         toc = {
@@ -173,6 +246,15 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
                 for c in result.structure
             ],
         }
+        # Signal TOC-rebuild (PDF seulement) : un PDF sans chapitrage natif
+        # (`chapters == []`) reçoit un **marqueur consultatif** — `chapters` reste
+        # honnêtement vide, on n'invente rien, mais on indique à l'agent /
+        # `wiki-reading-grid` qu'une reconstruction manuelle est nécessaire. Les
+        # autres types (epub) ne reçoivent PAS ce marqueur (out of scope de ce
+        # change : l'extracteur EPUB produit rarement `chapters == []`).
+        if doc_type == "pdfs" and not toc["chapters"]:
+            toc["_needs_toc_rebuild"] = True
+            toc["_hint"] = _TOC_REBUILD_HINT
         iohelpers.write_json(type_dir / f"{final_base}.toc.json", toc, work_root=work_root)
 
     status_table.upsert_row(

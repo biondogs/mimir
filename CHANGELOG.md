@@ -6,6 +6,43 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) ;
 versionnage [SemVer](https://semver.org/lang/fr/). Les frontmatters des skills
 suivent la même version (bump synchronisé).
 
+## [Unreleased]
+
+## [0.6.0] - 2026-06-15
+
+### Added
+
+- **Nouveau skill `wiki-batch-produce` — production déterministe d'articles Karpathy en
+  série depuis des sources web homogènes.** Adopte en repo le skill profilé battle-tested
+  (REX 2026-06-08) : 1 URL = 1 notion, sans appel LLM, idempotent, avec validation
+  post-écriture et rollback. 16 tests hermétiques (refus PDF/EPUB, refus frontmatter
+  chapitré, refus frontmatter incomplet, source → article, idempotence (2e run = skip),
+  désambiguïsation `-2`/`-3`, rollback article trop court, frontmatter flow-list,
+  sérialisation, finalize par source, audit best-effort, finalize echec non-abortif,
+  slug ASCII, sidecars de service ignorés, intégration ledger). Pipeline aligné sur
+  le socle partagé (bootstrap unifié, confinement, NFD/NFC, slug, ledger). La suite
+  passe de 6 à **7 skills** ; décompte mis à jour dans `CLAUDE.md`, `README.md`,
+  `openspec/project.md`, `config.yaml`, `skills.sh.json`. Spec normative :
+  `openspec/specs/batch-produce`.
+- **Nouveau skill `wiki-research` — recherche en profondeur sur un sujet texte.** À partir
+  d'un sujet, l'agent rassemble des sources web et les fait clipper automatiquement
+  (réutilise `wiki-extract` + dédup par URL, scan récursif de `raw/web/`), puis produit un
+  **rapport de synthèse** dans `reading-grids/<sujet>.md` avec frontmatter
+  `type: research-report`. 16 tests hermétiques (clip loop, dédup, scaffold, renvois
+  invalides, idempotence, intégration `wiki-index`). Différenciation stricte :
+  `wiki-extract` (URL unique, déterministe) / `wiki-reading-grid` (PDF chapitré,
+  déterministe) / `wiki-research` (sujet texte, sélection + rédaction sémantiques par
+  l'agent). La suite passe de 7 à **8 skills** ; décompte mis à jour dans `README.md`,
+  `SOUL.md`, `CLAUDE.md`, `config.yaml`, `openspec/project.md`, `skills.sh.json`,
+  `www/index.html`, `www/en/index.html`. Spec normative :
+  `openspec/specs/research-report`.
+- **Intégration `wiki-index` : `type: research-report` comme entrée valide de
+  `reading-grids/`.** `GridRef.kind` (`reading-grid` / `research-report`) + `GridRef.topic`
+  ajoutés ; `grids_by_subject` reconnaît le nouveau type (rattaché au `subject:` de
+  frontmatter) ; `build_subject_index` émet une section `## Rapports de recherche`
+  dédiée. L'audit liens (lecture seule) couvre automatiquement les nouveaux rapports
+  (déjà scannés via `_markdown_files`/`reading-grids/*`).
+
 ## [0.5.1] - 2026-06-09
 
 ### Changed
@@ -346,5 +383,8 @@ suivent la même version (bump synchronisé).
 - Les trois copies dupliquées de `sync_stub.py` (`wiki-ingest`, `wiki-reading-grid`,
   `wiki-index`) et `wiki-extract/inbox_lock.py` — remplacées par le moteur partagé `sync/`.
 
-[Unreleased]: https://github.com/vivian-maes/mimir/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/vivian-maes/mimir/compare/v0.5.1...HEAD
+[0.6.0]: https://github.com/vivian-maes/mimir/releases/tag/v0.6.0
+[0.5.1]: https://github.com/vivian-maes/mimir/releases/tag/v0.5.1
+[0.5.0]: https://github.com/vivian-maes/mimir/releases/tag/v0.5.0
 [0.2.0]: https://github.com/vivian-maes/mimir/releases/tag/v0.2.0

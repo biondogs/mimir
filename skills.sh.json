@@ -3,13 +3,16 @@
     {
       "id": "mimir",
       "name": "Mimir — Second cerveau",
-      "description": "Curation d'un wiki Obsidian (méthode Karpathy) : extraction de sources, compilation par notion, grilles de lecture, index/audit liens et synchro du vault.",
+      "description": "Curation d'un wiki Obsidian (méthode Karpathy) : extraction de sources, compilation par notion, grilles de lecture, index/audit liens, synchro du vault, et recherche en profondeur (rapports de synthèse).",
       "skills": [
         "wiki-extract",
         "wiki-ingest",
+        "wiki-batch-produce",
         "wiki-reading-grid",
         "wiki-index",
-        "wiki-sync"
+        "wiki-sync",
+        "wiki-init",
+        "wiki-research"
       ]
     }
   ]

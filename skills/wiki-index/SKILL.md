@@ -2,12 +2,14 @@
 name: wiki-index
 description: >
   Régénère les index du wiki à deux niveaux (INDEX principal des sujets + INDEX par sujet :
-  notions et grilles) et lance l'audit liens en lecture seule (cassés, fantômes, entrées
-  vides). Déclencher sur « régénère les index », « audite les liens du wiki », « mets à jour
-  la carte des sujets ». Lecture seule pour l'audit ; écritures bornées à work_root.
+  notions et grilles), lance l'audit liens en lecture seule (cassés, fantômes, entrées
+  vides) et propose une **réparation assistée** des wikilinks cassés (opt-in, n'écrit
+  que sur `--apply`). Déclencher sur « régénère les index », « audite les liens du wiki »,
+  « répare les liens cassés », « mets à jour la carte des sujets ». Audit lecture seule ;
+  écritures bornées à work_root et atomiques.
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.5.1"
+  version: "0.6.0"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, index, audit]
   hermes:
@@ -76,6 +78,29 @@ python scripts/wiki_index.py <regenerate|audit> …
    (notion à compiler, grille à régénérer), pas forcément un bug du pipeline. Périmètre :
    wikilinks `wiki/` + `reading-grids/` ; les liens vers `raw/` sont hors scope.
 
+3. **Réparation assistée** des liens cassés — **opt-in, écrit sur demande** (sous-commande
+   `fix`). Distincte de l'audit : elle **propose** un mapping pour chaque lien cassé et ne
+   réécrit **que** si `--apply` est passé. Sans `--apply` : aperçu, 0 écriture.
+   ```sh
+   python scripts/wiki_index.py --config CFG fix                          # dry-run (défaut)
+   python scripts/wiki_index.py --config CFG fix --apply                  # réécrit
+   python scripts/wiki_index.py --config CFG fix --scope ea               # borne au sujet ea
+   python scripts/wiki_index.py --config CFG fix --semantic-map map.json  # override manuel
+   python scripts/wiki_index.py --config CFG fix --json                   # rapport machine
+   ```
+   - **Passes de matching** (chacune ne s'applique que si la précédente échoue) :
+     0. **Override** `--semantic-map <json>` (mapping `{cible_cassée: cible_proposée}`), marqueur 🧠 ;
+     1. **Identité** (la cible résout telle quelle), marqueur 🔧 ;
+     2. **Préfixe commun char-par-char** ≥ 3 chars sur la notion, marqueur 🔧 ;
+     3. **Matching par mots** (≥ 1 mot long ≥ 6 chars OU ≥ 2 mots courts communs,
+        stop-words retirés), score `0.5 + 0.1·|mots communs| + 0.2·|mots longs communs|`,
+        marqueur 🔧. Le score mots reste < score préfixe : on n'écrase jamais une évidence.
+   - `--scope <sujet>` est **répétable** : ne retient que les liens dont la source est
+     sous `wiki/<scope>/`.
+   - La réécriture préserve les ancres `#…` et alias `|…` éventuels, et passe par
+     `atomic_write_text` (confinement `work_root`). Un re-audit best-effort est
+     lancé après `--apply` ; son résultat est dans le rapport.
+
 ## Format produit
 
 ```markdown
@@ -100,6 +125,6 @@ python scripts/wiki_index.py <regenerate|audit> …
 
 ## Références
 
-- Normalisation de chemins (`os.path.normpath`), forme majoritaire, NFD/NFC : [`../_shared-references/scripts/`](../_shared-references/scripts/) (`wikilinks.py`, `slug.py`), [`CONVENTIONS.md`](../_shared-references/CONVENTIONS.md) §3.
+- Normalisation de chemins (`os.path.normpath`), forme majoritaire, NFD/NFC : [`../_shared-references/scripts/`](../_shared-references/scripts/) (`wikilinks.py`, `slug.py`) ; spec normative : `mimir-invariants::nfd-nfc-normalization`.
 - Résumé d'article (callout `>`) : [`../_shared-references/scripts/article_index.py`](../_shared-references/scripts/article_index.py).
-- Spécification : `SPEC.md` §9.
+- Spécification : `specs/audit-index` (index-regenerable, link-audit-three-pass-readonly, ascii-slug-suggestion).

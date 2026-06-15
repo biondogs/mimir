@@ -13,26 +13,37 @@ Usage :
 Le backend (`rclone` | `git`, ou `noop` si le config n'a pas de clé `sync`) est
 choisi par `sync.backend`. Le périmètre est **borné à `work_root`** (confinement,
 SPEC §2) ; le verrou vit **hors** zone synchronisée (vigilance §12.9).
+
+**Garde-fou pré-push (opt-in)** : si `sync.presync_gate = true`, `push` et `sync`
+lancent `wiki-index audit` via le **runner injectable** avant le push ; si l'audit
+signale une anomalie, le push est **avorté** (exit non-zéro) et l'état local est
+préservé (SPEC sync-vault::opt-in-pre-push-validation-gate).
 """
 
 from __future__ import annotations
 
 import argparse
-import os
+import subprocess
 import sys
 from pathlib import Path
 
-# --- bootstrap : rendre le socle partagé importable (hors tests) -----------
-_SHARED = Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"
-for _cand in (os.environ.get("MIMIR_SHARED"), _SHARED):
-    if _cand and Path(_cand).is_dir() and str(_cand) not in sys.path:
-        sys.path.insert(0, str(_cand))
-        break
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+# --- bootstrap : importer le socle via le module unifié `bootstrap` ---------
+# (L'insertion de sys.path est centralisée dans `bootstrap._ensure_socle_path` :
+#  MIMIR_SHARED honoré, idempotent, fail fast sur symbole manquant.)
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"))
+import bootstrap  # noqa: E402,F401  (socle mutualisé ; voir skills/_shared-references/scripts/bootstrap.py)
 
 import config_loader  # noqa: E402
 import sync  # noqa: E402
+
+
+# Chemin du CLI `wiki_index.py` (résolu une fois pour le gate `presync_gate`).
+_WIKI_INDEX_CLI = (
+    Path(__file__).resolve().parents[2] / "wiki-index" / "scripts" / "wiki_index.py"
+)
 
 
 def _line(op: str, rc: int) -> str:
@@ -57,6 +68,26 @@ def _with_lock(cfg, fn) -> int:
         lk.release()
 
 
+def _run_presync_audit(cfg, runner) -> int:
+    """Si `sync.presync_gate=true`, lance `wiki_index audit` via `runner`.
+
+    - **Désactivé** (clé absente / `false`) : renvoie 0 sans rien spawner
+      (non-régression, SPEC §10 scenario « Gate disabled is the default »).
+    - **Activé** : spawn l'audit via le runner injectable et renvoie son exit
+      code. stdout/stderr de l'audit sont relayés sur les flux du CLI pour que
+      l'utilisateur voie le rapport (sinon le push est avorté sans contexte).
+    """
+    if not cfg.sync.get("presync_gate", False):
+        return 0
+    argv = [sys.executable, str(_WIKI_INDEX_CLI), "--config", str(cfg.config_path), "audit"]
+    result = runner(argv, capture_output=True, text=True)
+    if getattr(result, "stdout", None):
+        sys.stdout.write(result.stdout)
+    if getattr(result, "stderr", None):
+        sys.stderr.write(result.stderr)
+    return int(getattr(result, "returncode", 0))
+
+
 def cmd_lock(cfg, **_) -> int:
     return _with_lock(cfg, lambda: (print("✅ verrou disponible"), 0)[1])
 
@@ -72,9 +103,16 @@ def cmd_pull(cfg, **_) -> int:
     return _with_lock(cfg, run)
 
 
-def cmd_push(cfg, **_) -> int:
+def cmd_push(cfg, *, runner=None, **_) -> int:
+    runner = runner or subprocess.run
+
     def run():
-        backend = sync.get_backend(cfg)
+        gate_rc = _run_presync_audit(cfg, runner)
+        if gate_rc != 0:
+            print(_line("presync audit", gate_rc))
+            print("🛑 push avorté — état local préservé.")
+            return gate_rc
+        backend = sync.get_backend(cfg, runner)
         rc = backend.push()
         print(_line("push", rc))
         _flush_warnings(backend)
@@ -92,16 +130,22 @@ def cmd_validate(cfg, **_) -> int:
     return _with_lock(cfg, run)
 
 
-def cmd_sync(cfg, *, dry_run: bool = False) -> int:
+def cmd_sync(cfg, *, dry_run: bool = False, runner=None) -> int:
     """Cycle complet `pull → push → validate` sous un unique verrou."""
+    runner = runner or subprocess.run
 
     def cycle():
-        backend = sync.get_backend(cfg)
+        backend = sync.get_backend(cfg, runner)
         rc = backend.pull()
         print(_line("pull", rc))
         if rc != 0:
             return rc
         if not dry_run:
+            gate_rc = _run_presync_audit(cfg, runner)
+            if gate_rc != 0:
+                print(_line("presync audit", gate_rc))
+                print("🛑 push avorté — état local préservé.")
+                return gate_rc
             rc = backend.push()
             print(_line("push", rc))
             if rc != 0:

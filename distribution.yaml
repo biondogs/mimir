@@ -13,10 +13,10 @@
 #
 # Modèle/LLM : NON défini ici — le profil hérite du modèle du profil par défaut
 # (sinon `hermes -p mimir setup`). Gateway : service installé au 1er `hermes setup` ;
-# cron de synchro : voir backlog (v0.5.0). Réf. __projet__/SPEC.md §11.
+# cron de synchro : voir backlog (v0.5.0). Réf. spec `hermes-profile`.
 
 name: mimir
-version: "0.5.1"
+version: "0.6.0"
 description: "Curateur Mimir — entretient un wiki Obsidian (méthode Karpathy) : extrait des sources, compile par notion, indexe et synchronise."
 author: Vivian MAES
 license: PolyForm-Noncommercial-1.0.0

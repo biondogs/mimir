@@ -9,10 +9,12 @@ Façade unique que tous les orchestrateurs importent (`import sync`) :
     with sync.lock(cfg): ...   # mutex hors work_root
 
 Le backend est **sélectionné par `sync.backend`** du `wiki.config.json`
-(`rclone` | `git`), ou `noop` si le config n'a pas de clé `sync`. Les backends
-réels sont importés **paresseusement** (un environnement git n'a pas besoin de
-`rclone` et vice-versa). Le `runner` (= `subprocess.run`) est injectable pour
-des tests hermétiques.
+(`rclone` | `git` | `obsidian` | `auto`), ou `noop` si le config n'a pas de
+clé `sync`. Le mode `auto` sonde Obsidian et bascule dynamiquement (cf.
+`AutoBackend`). Les backends réels sont importés **paresseusement** (un
+environnement git n'a pas besoin de `rclone` et vice-versa). Le `runner`
+(= `subprocess.run`) et le `http_client` (pour le backend `obsidian`) sont
+injectables pour des tests hermétiques.
 """
 
 from __future__ import annotations
@@ -37,8 +39,17 @@ __all__ = [
 ]
 
 
-def get_backend(cfg, runner: Callable[..., Any] | None = None) -> SyncBackend:
-    """Instancie le backend désigné par `cfg` (`noop` si aucune clé `sync`)."""
+def get_backend(
+    cfg,
+    runner: Callable[..., Any] | None = None,
+    *,
+    http_client: Callable[..., tuple[int, str]] | None = None,
+) -> SyncBackend:
+    """Instancie le backend désigné par `cfg` (`noop` si aucune clé `sync`).
+
+    `http_client` n'est utilisé que par les backends `obsidian` et `auto`
+    (pour leurs appels Local REST API) ; les autres l'ignorent.
+    """
     sync = getattr(cfg, "sync", None) or {}
     if not sync:
         from .noop import NoopBackend
@@ -54,6 +65,14 @@ def get_backend(cfg, runner: Callable[..., Any] | None = None) -> SyncBackend:
         from .git import GitBackend
 
         return GitBackend(cfg, runner)
+    if backend == "obsidian":
+        from .obsidian import ObsidianBackend
+
+        return ObsidianBackend(cfg, runner, http_client=http_client)
+    if backend == "auto":
+        from .auto import AutoBackend
+
+        return AutoBackend(cfg, runner, http_client=http_client)
     raise SyncError(f"Backend de synchro inconnu : {backend!r}")
 
 

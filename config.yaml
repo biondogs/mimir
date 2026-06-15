@@ -9,7 +9,7 @@
 #   • Outils de base (fichiers, web, terminal) et délégation : fournis par le
 #     runtime Hermes — rien à déclarer.
 #   • Bundled skills de base : ATTENTION — `hermes profile install` ne copie QUE les
-#     fichiers de la distribution (les 5 wiki-*). Les bundled skills NE sont PAS
+#     fichiers de la distribution (les wiki-*). Les bundled skills NE sont PAS
 #     seedées par l'install. Les ajouter au profil après coup : `hermes update`
 #     (synchronise les bundled skills dans tous les profils).
 #
@@ -20,3 +20,13 @@
 # Override explicite possible (décommenter) si tu veux pointer une config ailleurs :
 # env:
 #   MIMIR_CONFIG: /chemin/absolu/vers/wiki.config.json
+#
+# ─── Identité du profil (référence lecture seule au chargement) ───
+# Stack    : Python 3.12 (socle + extracteurs) · Obsidian (vault cible)
+# Pipeline : 8 skills wiki-* (extract, ingest, batch-produce, reading-grid, index, sync, init, research)
+# Licence  : PolyForm Noncommercial 1.0.0 — source-available, PAS open-source
+#            au sens OSI/FSF (usage commercial interdit sans accord écrit).
+#            Réf. : LICENSE (racine) + README §Licence.
+# Réf.    : SOUL.md (persona) · skills/_shared-references/CONVENTIONS.md
+#           (règles) · distribution.yaml (manifeste du profil).
+# ──────────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ description: >
   sources », « décompose ce PDF en articles ». Borné à work_root.
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.5.1"
+  version: "0.6.0"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, karpathy, ingestion]
   hermes:
@@ -125,6 +125,6 @@ python scripts/wiki_ingest.py <inventory|write-article|finalize> …
 
 ## Références
 
-- Format Karpathy, antidoublon, double `_assets`, Mermaid : [`../_shared-references/CONVENTIONS.md`](../_shared-references/CONVENTIONS.md) §6, §8, [`FRONTMATTERS.md`](../_shared-references/FRONTMATTERS.md) §1, §4.
+- Format Karpathy + Mermaid + no-dump : spec `compile-source::karpathy-article-format` + spec `mimir-invariants::mermaid-mandatory` + spec `mimir-invariants::no-dump-in-wiki` ; gabarits frontmatter : [`../_shared-references/FRONTMATTERS.md`](../_shared-references/FRONTMATTERS.md).
 - Ledger, slug/NFD-NFC, écriture confinée : [`../_shared-references/scripts/`](../_shared-references/scripts/) (`ledger.py`, `slug.py`, `iohelpers.py`, `guard.py`).
-- Spécification : `SPEC.md` §5, §7.
+- Spécification : `specs/compile-source::karpathy-article-format` + `specs/compile-source::inventory-diff-ledger` + `specs/compile-source::finalize-status-and-ledger` + `specs/mimir-invariants::idempotence-ledger` + `specs/mimir-invariants::no-dump-in-wiki`.

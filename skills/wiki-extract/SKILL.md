@@ -7,7 +7,7 @@ description: >
   source », « clippe cette page ». N'écrit que dans raw/ (confinement).
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.5.1"
+  version: "0.6.0"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, extraction, pdf, epub, ocr, scraping]
   hermes:
@@ -88,7 +88,7 @@ même si une lib manque). **Jamais d'invention de contenu** (§12.5) : si l'extr
 
 ## Références
 
-- Formats raw, immutabilité, sidecars : [`../_shared-references/CONVENTIONS.md`](../_shared-references/CONVENTIONS.md) §2–§5, [`FRONTMATTERS.md`](../_shared-references/FRONTMATTERS.md) §3–§5.
+- Formats raw + immutabilité + sidecars : spec `extract-source::extraction-immutable` + spec `mimir-invariants::append-only-raw` ; gabarits frontmatter : [`../_shared-references/FRONTMATTERS.md`](../_shared-references/FRONTMATTERS.md).
 - Slug ASCII, NFD/NFC : [`../_shared-references/scripts/slug.py`](../_shared-references/scripts/slug.py).
 - Outillage (PyMuPDF, ocrmypdf, tesseract) : [`../_shared-references/TOOLING.md`](../_shared-references/TOOLING.md).
-- Spécification : `SPEC.md` §4, §6.
+- Spécification : `specs/extract-source` (dropzone-routing, extractor-pluggable-contract, extraction-immutable) + `specs/compile-source::karpathy-article-format` + `specs/mimir-invariants::append-only-raw`.

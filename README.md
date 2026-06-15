@@ -57,7 +57,7 @@ tire. Mimir fait le pont entre les deux, en continu.
 
 ## Comment ça marche
 
-Sous le capot, Mimir est une **suite de 6 skills** [agentskills.io](https://agentskills.io)
+Sous le capot, Mimir est une **suite de 8 skills** [agentskills.io](https://agentskills.io)
 orchestrés par l'agent **Hermes**. Ensemble, ils forment un pipeline en deux
 couches strictes — la **matière brute**, conservée intacte, et le **savoir
 reformulé**, relié par notion :
@@ -67,13 +67,22 @@ Source (PDF · EPUB · URL)
    │
    ├─ wiki-extract  → range la source brute, fidèle et immuable
    ├─ wiki-ingest   → la digère en articles wiki, une notion par page
+   ├─ wiki-batch-produce → idem, en série déterministe (web uniquement)
    ├─ wiki-reading-grid → en tire une grille de lecture ordonnée
    ├─ wiki-index    → reconstruit l'INDEX et vérifie les liens
    └─ wiki-sync     → synchronise le tout vers le vault Obsidian
 ```
 
-Un sixième skill, **wiki-init**, prépare le terrain au premier usage : il crée
+Un septième skill, **wiki-init**, prépare le terrain au premier usage : il crée
 l'arborescence du second cerveau et amorce la synchro.
+
+Un huitième skill, **wiki-research**, joue dans une autre dimension : pour une
+**recherche en profondeur sur un sujet texte** (« fais une recherche sur X »,
+« monte un dossier sur X »), l'agent sélectionne des sources web, les fait
+clipper automatiquement (réutilise `wiki-extract`), puis rédige un **rapport de
+synthèse** dans `reading-grids/<sujet>.md`. Le clip et le scaffold restent
+déterministes ; seule la **sélection des sources** et la **rédaction** sont
+sémantiques (pilotées par l'agent, pas par le script).
 
 ## Installation
 
@@ -82,7 +91,7 @@ l'arborescence du second cerveau et amorce la synchro.
 
 ```bash
 hermes profile install https://github.com/vivian-maes/mimir.git
-hermes update     # ⚠️ seede les skills de base : sans ça, le profil n'a que les 5 wiki-*
+hermes update     # ⚠️ seede les skills de base : sans ça, le profil n'a que les 8 wiki-*
 ```
 
 > **Mise à jour** (profil déjà installé) : **`hermes profile update mimir`** (mise à niveau

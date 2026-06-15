@@ -1,0 +1,14 @@
+# Pinned dependencies (optionnelles) — wiki-research
+
+> Wiki-research **n'introduit aucune dépendance applicative obligatoire**.
+> Il réutilise la stack stdlib + `wiki-extract` (clip web). Cette liste
+> documente les soft-deps que les extracteurs web peuvent mobiliser, et
+> qui sont déjà installées via `wiki-extract`.
+
+# Web clipping (délégué à wiki-extract, voir `skills/wiki-extract/requirements.txt`)
+# - requests       (HTTP)
+# - trafilatura    (markdown propre, couche 1)
+# - readability-lxml + bs4 + markdownify  (repli riche, couche 2)
+
+# Pas de LLM côté orchestrateur (la rédaction du rapport est pilotée par
+# l'agent dans la conversation, pas par ce script). Aucune clé API requise.

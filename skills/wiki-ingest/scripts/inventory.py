@@ -5,6 +5,16 @@ On liste les **fichiers de contenu** (`.pdf.txt` / `.epub.txt` / web `.md`) — 
 les binaires, ni les sidecars de service (`INDEX.md`, `_status.md`, `*.toc.json`,
 `_assets/`) — et on calcule leur SHA256. La sélection compare au ledger : une source
 absente ou au SHA différent est « à compiler » ; sinon elle est déjà à jour (idempotence).
+
+Le digest de statut (`status_digest`) expose, **par source** et de manière
+machine-lisible, le statut de compilation dérivé du ledger et de `_status.md` :
+
+- `extrait` (sidecars présents, **0 article** compilé) — `article_count = 0`
+- `partiellement compilé` (≥1 article mais statut `_status.md` ≠ `compilé`)
+- `compilé` (`_status.md` = `compilé`, count = N articles du ledger)
+
+Une source à 0 article n'est **jamais** présentée comme `compilé` (cf. spec
+`compile-source` « Extracted-but-not-compiled is reported honestly »).
 """
 
 from __future__ import annotations
@@ -14,10 +24,14 @@ from pathlib import Path
 
 import iohelpers
 import ledger as ledger_mod
+import status_table
 
 #: Extension du fichier de contenu par type de document.
 _CONTENT_EXT = {"pdfs": ".pdf.txt", "epubs": ".epub.txt", "web": ".md"}
 _SKIP_NAMES = {"INDEX.md", "_status.md", ".DS_Store"}
+
+#: Statut final d'une source dans le digest (cf. spec `compile-source`).
+STATUSES = ("extrait", "partiellement compilé", "compilé")
 
 
 @dataclass
@@ -107,3 +121,71 @@ def select(cfg, led: dict[str, ledger_mod.LedgerEntry], source: str | None = Non
         if ledger_mod.needs_compile(led, f.content_path, f.sha256)
     ]
     return {"worklist": worklist, "existing_notions": existing_notions(cfg)}
+
+
+# --- digest de statut par source (spec `compile-source`) -------------------
+@dataclass
+class StatusEntry:
+    """Statut de compilation d'une source + compte d'articles (ledger)."""
+
+    content_path: str   # chemin relatif à work_root (posix)
+    doc_type: str       # pdfs | epubs | web
+    status: str         # extrait | partiellement compilé | compilé
+    article_count: int  # taille de ledger[content_path].articles (0 si absent)
+
+    def as_dict(self) -> dict:
+        return {
+            "content_path": self.content_path,
+            "doc_type": self.doc_type,
+            "status": self.status,
+            "article_count": self.article_count,
+        }
+
+
+def _derive_status(article_count: int, status_row: status_table.StatusRow | None) -> str:
+    """Dérive le statut final à partir du compte d'articles et de `_status.md`.
+
+    Règle d'or (spec `compile-source` « Extracted-but-not-compiled is reported
+    honestly ») : **0 article ne peut jamais devenir `compilé`**. La seule
+    branche qui produit `compilé` exige `article_count ≥ 1` ET
+    `status_row.statut == "compilé"`.
+    """
+    if article_count <= 0:
+        return "extrait"
+    if status_row is not None and status_row.statut == "compilé":
+        return "compilé"
+    return "partiellement compilé"
+
+
+def _load_status_rows_cached(cfg, doc_type: str, _cache: dict[str, list[status_table.StatusRow]]) -> list[status_table.StatusRow]:
+    """Charge `_status.md` une seule fois par `doc_type` (évite les I/O répétés)."""
+    if doc_type not in _cache:
+        _cache[doc_type] = status_table.load_status(cfg.RAW / doc_type / "_status.md")
+    return _cache[doc_type]
+
+
+def status_digest(cfg) -> dict:
+    """Digest machine-lisible du statut de compilation **par source**.
+
+    Combine `scan_content` (énumération des sources), le ledger (compte
+    d'articles) et `_status.md` (statut posé par `finalize`). Une source
+    `extrait` (sidecars présents, 0 article) n'est **jamais** étiquetée
+    `compilé` — voir `_derive_status` pour la garantie.
+    """
+    led = ledger_mod.load_ledger(cfg.LEDGER)
+    cache: dict[str, list[status_table.StatusRow]] = {}
+    out: list[StatusEntry] = []
+    for f in scan_content(cfg):
+        rows = _load_status_rows_cached(cfg, f.doc_type, cache)
+        row = next((r for r in rows if r.fichier == Path(f.content_path).name), None)
+        entry = led.get(f.content_path)
+        count = len(entry.articles) if entry is not None else 0
+        out.append(
+            StatusEntry(
+                content_path=f.content_path,
+                doc_type=f.doc_type,
+                status=_derive_status(count, row),
+                article_count=count,
+            )
+        )
+    return {"sources": [e.as_dict() for e in out]}

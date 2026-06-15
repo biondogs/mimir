@@ -30,11 +30,19 @@ _MAIN_ENTRY_RE = re.compile(r"-\s*\[\[(?:wiki/)?([^\]/|#^]+)/_INDEX\]\][^—]*�
 
 @dataclass
 class GridRef:
-    """Une grille de lecture rattachée à un sujet."""
+    """Une entrée de `reading-grids/` rattachée à un sujet.
+
+    Deux `kind` reconnus (cf. spec `wiki-research` §5) :
+    - `"reading-grid"` (palier v3→v4) : ouvrage chapitré ; `work` + `chapters` posés.
+    - `"research-report"` (skill `wiki-research`) : synthèse sur un sujet texte ;
+      `topic` posé, `work` et `chapters` à `""`/`0`.
+    """
 
     slug: str
     work: str
     chapters: int
+    kind: str = "reading-grid"
+    topic: str = ""
 
 
 @dataclass
@@ -74,18 +82,43 @@ def detect_form(cfg) -> str:
 
 
 def grids_by_subject(cfg) -> dict[str, list[GridRef]]:
-    """Rattache chaque grille de `reading-grids/` aux sujets qu'elle cite."""
+    """Rattache chaque entrée de `reading-grids/` aux sujets qu'elle cite.
+
+    Reconnait deux `type:` (cf. spec `wiki-research` §5) :
+    - `reading-grid` : grille de lecture d'un ouvrage chapitré ;
+    - `research-report` : rapport de recherche (synthèse sur un sujet texte).
+
+    Pour un `research-report`, le sujet principal est son `subject:` de
+    frontmatter (mandatoire, posé par `wiki-research scaffold`). Les wikilinks
+    du corps ajoutent des rattachements secondaires (le rapport peut évoquer
+    d'autres sujets que le sien).
+    """
     out: dict[str, list[GridRef]] = {}
     if not cfg.READING_GRIDS.is_dir():
         return out
     for p in sorted(cfg.READING_GRIDS.glob("*.md")):
         front, body = parse_frontmatter(p.read_text(encoding="utf-8"))
-        if front.get("type") != "reading-grid":
-            continue
-        work = str(front.get("work") or p.stem)
-        chapters = int(front["chapters"]) if str(front.get("chapters", "")).isdigit() else 0
-        ref = GridRef(slug=p.stem, work=work, chapters=chapters)
-        subjects = {t.split("/")[0] for t in wikilinks.extract_wikilinks(body) if "/" in t}
+        kind = str(front.get("type") or "")
+        if kind == "reading-grid":
+            work = str(front.get("work") or p.stem)
+            chapters = int(front["chapters"]) if str(front.get("chapters", "")).isdigit() else 0
+            ref = GridRef(slug=p.stem, work=work, chapters=chapters, kind=kind)
+        elif kind == "research-report":
+            topic = str(front.get("topic") or front.get("title") or p.stem)
+            ref = GridRef(slug=p.stem, work="", chapters=0, kind=kind, topic=topic)
+        else:
+            continue  # ni grille, ni rapport → ignoré (permet d'autres types future-proof)
+
+        # rattachements : sujet du frontmatter + sujets cités par wikilinks
+        subjects: set[str] = set()
+        primary = str(front.get("subject") or "").strip()
+        if primary:
+            subjects.add(primary)
+        for t in wikilinks.extract_wikilinks(body):
+            if "/" in t and not t.startswith(("raw/", "wiki/", "reading-grids/")):
+                subjects.add(t.split("/")[0])
+            elif t.startswith("wiki/") and "/" in t[5:]:
+                subjects.add(t.split("/")[1])
         for subject in sorted(subjects):
             out.setdefault(subject, []).append(ref)
     return out
@@ -110,17 +143,30 @@ def _existing_descriptions(cfg) -> dict[str, str]:
 
 
 def build_subject_index(cfg, subject: str, form: str, grids: list[GridRef]) -> str:
-    """Markdown de `wiki/<sujet>/_INDEX.md` : notions (+ résumé) et grilles rattachées."""
+    """Markdown de `wiki/<sujet>/_INDEX.md` : notions (+ résumé) et grilles rattachées.
+
+    Les rapports de recherche (`kind: research-report`) sont listés dans une
+    section dédiée `## Rapports de recherche` pour rester visuellement
+    séparés des grilles de lecture chapitrées.
+    """
     lines = [f"# Index — {subject}", "", "## Notions", ""]
     for notion in list_notions(cfg, subject):
         info = article_index.load_article(cfg, f"{subject}/{notion}")
         link = f"[[{_article_link(form, subject, notion)}]]"
         lines.append(f"- {link} — {info.summary}" if info.summary else f"- {link}")
-    if grids:
+
+    grids_only = [g for g in grids if g.kind == "reading-grid"]
+    reports = [g for g in grids if g.kind == "research-report"]
+
+    if grids_only:
         lines += ["", "## Grilles de lecture", ""]
-        for g in sorted(grids, key=lambda r: r.slug):
+        for g in sorted(grids_only, key=lambda r: r.slug):
             suffix = f" ({g.chapters} ch.)" if g.chapters else ""
             lines.append(f"- [[{cfg.layout['reading_grids']}/{g.slug}]] — {g.work}{suffix}")
+    if reports:
+        lines += ["", "## Rapports de recherche", ""]
+        for g in sorted(reports, key=lambda r: r.slug):
+            lines.append(f"- [[{cfg.layout['reading_grids']}/{g.slug}]] — {g.topic}")
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

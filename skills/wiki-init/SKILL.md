@@ -8,7 +8,7 @@ description: >
   démarrage ». Idempotent ; strictement borné à work_root (confinement).
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.5.1"
+  version: "0.6.0"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, init, bootstrap, setup]
   hermes:
@@ -82,7 +82,7 @@ work_root/
 
 ## Références
 
-- Confinement & conventions : [`../_shared-references/CONVENTIONS.md`](../_shared-references/CONVENTIONS.md).
+- Confinement : spec `mimir-invariants::confinement`. Amorce & idempotence : spec `bootstrap-vault` (apply / status / initial sync).
 - Chargeur de config & garde : [`../_shared-references/scripts/`](../_shared-references/scripts/).
 - Moteur de synchro : [`../_shared-references/scripts/sync/`](../_shared-references/scripts/sync/).
-- Spécification : `SPEC.md` §2, §3, §10.
+- Spécification : `specs/mimir-invariants::confinement` + `specs/bootstrap-vault` + `specs/sync-vault`.

@@ -81,3 +81,46 @@ def test_audit_aucune_ecriture(vault):
     la.audit(vault)
     after = {p: p.stat().st_mtime_ns for p in vault.work_root.rglob("*") if p.is_file()}
     assert snapshot == after                          # lecture seule : rien n'a bougé
+
+
+def test_passe4_cjk_artefact_signale(vault):
+    """Un artefact CJK (`充当`) dans un article est compté (exit non-zéro)."""
+    ib.regenerate(vault, dry_run=False)
+    art = vault.WIKI / "navigation" / "relevement.md"
+    art.write_text(
+        art.read_text(encoding="utf-8") + "\n## Définition\nCe mot est 充当 un artefact.\n",
+        encoding="utf-8",
+    )
+    report = la.audit(vault)
+    # `充当` = 2 caractères CJK ; la passe signale fichier + tous les caractères trouvés.
+    assert report.cjk == [("wiki/navigation/relevement.md", ["充", "当"])]
+    assert report.total >= 1
+    assert not report.ok
+    out = la.render_report(report, today="2026-06-14")
+    assert "Passe 4 — CJK parasites .......... 1" in out
+    assert "充" in out and "当" in out
+
+
+def test_passe4_cjk_hiragana_et_katakana(vault):
+    """Les trois plages (Han, Hiragana, Katakana) sont couvertes, dédoublonnées par fichier."""
+    ib.regenerate(vault, dry_run=False)
+    art = vault.WIKI / "navigation" / "relevement.md"
+    art.write_text(
+        art.read_text(encoding="utf-8") + "\n## Définition\nひらがな et カタカナ et 充当 et 弥补.\n",
+        encoding="utf-8",
+    )
+    report = la.audit(vault)
+    chars = next(cs for path, cs in report.cjk if path == "wiki/navigation/relevement.md")
+    # Hiragana + Katakana + Han (4 caractères Han distincts, le tout déduplonné par fichier)
+    assert "ひ" in chars and "カ" in chars
+    assert "充" in chars and "当" in chars and "弥" in chars and "补" in chars
+    # déduplication par fichier : pas de doublon
+    assert len(chars) == len(set(chars))
+
+
+def test_passe4_cjk_zero_si_vault_propre(vault):
+    """Vault sans CJK → la passe 4 contribue 0 ; exit 0 (3.2)."""
+    ib.regenerate(vault, dry_run=False)
+    report = la.audit(vault)
+    assert report.cjk == []
+    assert report.ok and report.total == 0

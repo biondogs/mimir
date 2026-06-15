@@ -22,20 +22,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-# --- bootstrap : rendre le socle partagé importable (hors tests) -----------
-_SHARED = Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"
-for _cand in (os.environ.get("MIMIR_SHARED"), _SHARED):
-    if _cand and Path(_cand).is_dir() and str(_cand) not in sys.path:
-        sys.path.insert(0, str(_cand))
-        break
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+# --- bootstrap : importer le socle via le module unifié `bootstrap` ---------
+# (L'insertion de sys.path est centralisée dans `bootstrap._ensure_socle_path` :
+#  MIMIR_SHARED honoré, idempotent, fail fast sur symbole manquant.)
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"))
+import bootstrap  # noqa: E402,F401  (socle mutualisé ; voir skills/_shared-references/scripts/bootstrap.py)
 
 import config_loader  # noqa: E402
 import iohelpers  # noqa: E402
@@ -92,8 +91,33 @@ def _resolve_grid_path(cfg, work: str, content_rel: str) -> tuple[Path, str | No
     return grids_dir / f"{candidate}.md", None
 
 
+def _find_existing_grid_path(cfg, content_rel: str) -> Path | None:
+    """Chemin d'une grille existante pour `content_rel`, ou `None`.
+
+    Variante sans dépendance sur le titre de l'ouvrage (utilisée pour
+    détecter l'existant AVANT d'appeler `build_grid` qui a besoin du
+    titre pour calculer le `work`).
+    """
+    grids_dir = cfg.READING_GRIDS
+    if not grids_dir.is_dir():
+        return None
+    for p in sorted(grids_dir.glob("*.md")):
+        try:
+            front, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if front.get("source") == content_rel:
+            return p
+    return None
+
+
 def _update_status_grille(cfg, content_rel: str, grid_slug: str, *, today: str) -> bool:
     """Met à jour la colonne « Grille » de `raw/<type>/_status.md`. Préserve le reste.
+
+    Le matching de la ligne tolère deux formes pour `r.fichier` (qui coexistent
+    en pratique, notamment pour le web) :
+    - **basename** : `navigation-cotiere.pdf.txt` (pdfs/epubs classiques) ;
+    - **préfixée** : `raw/web/foo-20260608.md` (web — chemin relatif complet).
 
     Renvoie False (sans créer de ligne fantôme) si la source n'a pas encore de ligne.
     """
@@ -101,7 +125,9 @@ def _update_status_grille(cfg, content_rel: str, grid_slug: str, *, today: str) 
     doc_type, fichier = parts[1], parts[-1]
     status_path = cfg.RAW / doc_type / "_status.md"
     rows = status_table.load_status(status_path)
-    existing = next((r for r in rows if r.fichier == fichier), None)
+    existing = next(
+        (r for r in rows if r.fichier == fichier or r.fichier == content_rel), None
+    )
     if existing is None:
         return False
     existing.grille = f"[[{cfg.layout['reading_grids']}/{grid_slug}]]"
@@ -112,12 +138,25 @@ def _update_status_grille(cfg, content_rel: str, grid_slug: str, *, today: str) 
 
 
 def cmd_generate(cfg, source: str, *, skip_sync: bool = False, dry_run: bool = False) -> GenOutcome:
-    """(Re)génère la grille de l'ouvrage `source`. Idempotent."""
+    """(Re)génère la grille de l'ouvrage `source`. Idempotent.
+
+    À la régénération, les phrases éditoriales déjà présentes (zones
+    `<!-- blurb:… -->`) sont **extraites** de la grille existante et
+    **réinjectées** dans leur chapitre par appariement sur l'`order` du
+    `toc.json` (tolérant à un léger renommage de titre). Une phrase non
+    vide n'est jamais écrasée par le placeholder `_à rédiger_`.
+    """
     if not skip_sync and sync.pull(cfg) != 0:
         raise RuntimeError("pré-sync (pull) en échec — génération interrompue")
 
     content_rel = _to_content_rel(cfg, source)
-    result = grid_builder.build_grid(cfg, content_rel)
+    # On cherche une grille existante AVANT de construire (pour préserver
+    # ses phrases éditoriales). C'est cohérent avec l'idempotence de
+    # `_resolve_grid_path` qui résout au même chemin à la fin.
+    existing_path = _find_existing_grid_path(cfg, content_rel)
+    result = grid_builder.build_grid(
+        cfg, content_rel, existing_grid_path=existing_path
+    )
     if result.skipped:
         return GenOutcome("generate", "ignoré", content_rel, detail=f"sans chapitrage ({result.skipped})", result=result)
 
@@ -199,7 +238,15 @@ def main(argv: list[str] | None = None) -> int:
             "linked_articles": out.result.linked_articles if out.result else [],
             "unresolved_chapters": out.result.unresolved_chapters if out.result else [],
             "orphan_articles": out.result.orphan_articles if out.result else [],
+            "chapters_missing_blurb": out.result.chapters_missing_blurb if out.result else {},
         }, ensure_ascii=False, indent=2))
+        if out.result and out.result.chapters_missing_blurb:
+            n = len(out.result.chapters_missing_blurb)
+            print(
+                f"📝 {n} chapitre(s) au placeholder `_à rédiger_` — "
+                "rédige une phrase courte par chapitre puis relance `generate`.",
+                file=sys.stderr,
+            )
         print(f"{'✅' if out.status != 'error' else '❌'} {out.detail}", file=sys.stderr)
         return 1 if out.status == "error" else 0
 

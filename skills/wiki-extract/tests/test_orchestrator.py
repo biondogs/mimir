@@ -197,6 +197,185 @@ def test_web_clipping(cfg, monkeypatch):
     assert (web / "_assets").is_dir() and any((web / "_assets").iterdir())
 
 
+# --- 3.1 : PDF à 3 images -> _assets/<base>/img-*.png ----------------------
+
+def test_pdf_assets_regroupes_par_source(cfg, monkeypatch):
+    """Un PDF produisant 3 images écrit les assets dans
+    `raw/pdfs/_assets/<base>/<nom-image>` (palier v1→v2), pas à plat
+    avec un préfixe `<base>-`."""
+    assets = [
+        Asset(filename="p001-img01.png", data=b"PNG1"),
+        Asset(filename="p002-img02.jpg", data=b"JPG2"),
+        Asset(filename="p003-img03.gif", data=b"GIF3"),
+    ]
+    _install_fake(
+        monkeypatch,
+        content="Texte du PDF.\n",
+        content_ext="pdf.txt",
+        doc_type="pdfs",
+        assets=assets,
+    )
+    _drop(cfg, "book.pdf")
+    out = wiki_extract.run(cfg, None, lang="x", dry_run=False)
+    assert out[0].status == "extrait"
+
+    pdfs = cfg.RAW / "pdfs"
+    assets_dir = pdfs / "_assets"
+    # Le sous-répertoire par source existe
+    assert (assets_dir / "book").is_dir()
+    # Les 3 images sont dans le sous-répertoire, pas à plat
+    assert (assets_dir / "book" / "p001-img01.png").is_file()
+    assert (assets_dir / "book" / "p002-img02.jpg").is_file()
+    assert (assets_dir / "book" / "p003-img03.gif").is_file()
+    # Pas d'images à plat avec préfixe `<base>-`
+    flat_assets = [p.name for p in assets_dir.iterdir() if p.is_file()]
+    assert not any(name.startswith("book-") for name in flat_assets)
+    # Le contenu de chaque image est préservé
+    assert (assets_dir / "book" / "p001-img01.png").read_bytes() == b"PNG1"
+
+
+def test_pdf_deux_sources_ont_leurs_propres_sous_repertoires(cfg, monkeypatch):
+    """Deux PDF distincts = deux sous-répertoires disjoints sous `_assets/`."""
+    # Premier PDF
+    _install_fake(
+        monkeypatch,
+        content="PDF A",
+        content_ext="pdf.txt",
+        doc_type="pdfs",
+        assets=[Asset(filename="p001.png", data=b"A1")],
+    )
+    _drop(cfg, "alpha.pdf")
+    wiki_extract.run(cfg, None, lang="x", dry_run=False)
+
+    # Deuxième PDF (reconfiguré)
+    _install_fake(
+        monkeypatch,
+        content="PDF B",
+        content_ext="pdf.txt",
+        doc_type="pdfs",
+        assets=[Asset(filename="p001.png", data=b"B1")],
+    )
+    _drop(cfg, "beta.pdf")
+    wiki_extract.run(cfg, None, lang="x", dry_run=False)
+
+    pdfs = cfg.RAW / "pdfs"
+    assert (pdfs / "_assets" / "alpha" / "p001.png").read_bytes() == b"A1"
+    assert (pdfs / "_assets" / "beta" / "p001.png").read_bytes() == b"B1"
+
+
+def test_pdf_assets_dans_sous_repertoire_confine(cfg, monkeypatch):
+    """L'écriture des assets dans `_assets/<base>/` reste confinée à work_root.
+
+    Un `<base>` qui tenterait une évasion (`../foo`) serait rejeté par
+    `guard.assert_within` au moment du `atomic_write_bytes`. On vérifie
+    qu'un slug légitime (et non une évasion) passe — confinement **positif**
+    (chemin sous work_root) et non que l'évasion est levée (cas testé en
+    aval dans `test_guard.py`)."""
+    _install_fake(
+        monkeypatch,
+        content="x",
+        content_ext="pdf.txt",
+        doc_type="pdfs",
+        assets=[Asset(filename="p001.png", data=b"PNG")],
+    )
+    _drop(cfg, "book.pdf")
+    wiki_extract.run(cfg, None, lang="x", dry_run=False)
+
+    # Tout ce qui a été créé est sous work_root
+    enfants = {p.name for p in cfg.work_root.iterdir()}
+    assert enfants <= {"_inbox", "raw"}  # pas d'évasion
+
+
+# --- 5.2 / 5.3 : web clipping avec HTML source + assets regroupés ----------
+
+def test_web_clipping_ecrit_html_a_cote_du_md(cfg, monkeypatch):
+    """Le clipping web écrit `raw/web/<slug>-<date>.html` (matière immuable)
+    à côté du `.md` dérivé. Le `.html` est la réponse fetchée brute, pas une
+    transformation (palier v2→v3)."""
+    _HTML = "<html><body><article><h1>Le Titre</h1><p>Le contenu.</p></article></body></html>"
+
+    class FakeWeb:
+        SUPPORTED_EXTS = set()
+        @staticmethod
+        def extract(source, *, lang="fra+eng"):
+            return ExtractResult(
+                raw_content="# Le Titre\n\nLe contenu.\n",
+                content_ext="md",
+                source_content=_HTML.encode("utf-8"),
+                source_ext="html",
+                metadata={
+                    "title": "Le Titre",
+                    "source": str(source),
+                    "type": "web",
+                    "created": "2026-06-15",
+                },
+                structure=[],
+                assets=[],
+                doc_type="web",
+            )
+
+    monkeypatch.setattr(wiki_extract.extractors, "get_extractor", lambda src: FakeWeb)
+
+    out = wiki_extract.run(cfg, "https://exemple.org/titre", lang="x", dry_run=False)
+    assert out[0].status == "extrait"
+
+    web = cfg.RAW / "web"
+    md_files = [p for p in web.glob("*.md") if p.name != "_status.md"]
+    html_files = list(web.glob("*.html"))
+    assert len(md_files) == 1
+    assert len(html_files) == 1
+    # Le .html et le .md partagent le même préfixe (suffixage -N partagé).
+    assert md_files[0].name.removesuffix(".md") == html_files[0].name.removesuffix(".html")
+    # Le .html est la réponse brute (pas une transformation).
+    assert html_files[0].read_text(encoding="utf-8") == _HTML
+
+
+def test_web_clipping_assets_regroupes_par_slug(cfg, monkeypatch):
+    """Les images web sont rangées sous `raw/web/_assets/<slug>/` (regroupées
+    par clipping), pas à plat. Le slug = nom de fichier du .md sans extension."""
+    asset = Asset(filename="img.png", data=b"PNG", original_ref="https://ex.org/i.png")
+    _HTML_SRC = "<html><body><article><h1>Ma Page</h1><p>x</p></article></body></html>"
+
+    # Custom installer : on doit aussi poser source_content (la fixture
+    # `_install_fake` ne le fait pas — le test vérifie l'intégration
+    # d'orchestrateur avec un ExtractResult complet).
+    class FakeWeb:
+        SUPPORTED_EXTS = set()
+        @staticmethod
+        def extract(source, *, lang="fra+eng"):
+            return ExtractResult(
+                raw_content="# Ma Page\n\n![x](https://ex.org/i.png)\n",
+                content_ext="md",
+                source_content=_HTML_SRC.encode("utf-8"),
+                source_ext="html",
+                metadata={"title": "Ma Page", "source": str(source), "type": "web", "created": "2026-06-15"},
+                structure=[],
+                assets=[asset],
+                doc_type="web",
+            )
+
+    monkeypatch.setattr(wiki_extract.extractors, "get_extractor", lambda src: FakeWeb)
+
+    out = wiki_extract.run(cfg, "https://ex.org/article", lang="x", dry_run=False)
+    assert out[0].status == "extrait"
+
+    web = cfg.RAW / "web"
+    md_files = [p for p in web.glob("ma-page-*.md")]
+    assert len(md_files) == 1
+    md_file = md_files[0]
+    slug = md_file.name.removesuffix(".md")
+    # L'asset est sous `<slug>/`
+    asset_path = web / "_assets" / slug / "img.png"
+    assert asset_path.is_file()
+    # Le lien dans le .md est réécrit en relatif
+    text = md_file.read_text(encoding="utf-8")
+    assert f"_assets/{slug}/img.png" in text
+    # Le HTML source est aussi écrit
+    html_files = list(web.glob("*.html"))
+    assert len(html_files) == 1
+    assert html_files[0].name == md_file.name.removesuffix(".md") + ".html"
+
+
 # --- verrou tenu : skip propre --------------------------------------------
 def test_verrou_tenu(cfg, monkeypatch):
     _install_fake(monkeypatch, content="x")

@@ -87,3 +87,80 @@ def test_skip_sync(vault, monkeypatch):
     assert calls == {"pull": 0, "push": 0}
     wrg.cmd_generate(vault, CONTENT_REL, skip_sync=False)
     assert calls == {"pull": 1, "push": 1}
+
+
+# --- 3.2 : Smoke test du fix ENFSI — block-list YAML → articles liés --------
+# Reproduction du bug #3 (REX ENFSI 2026-06-08) : 16 articles avec un
+# `sources:` au format block-list (forme YAML standard produite par les LLM)
+# produisaient une grille vide. Le fix du parseur de frontmatter permet
+# désormais de les rattacher à leurs chapitres.
+
+def test_grille_lie_les_articles_avec_sources_block_list(cfg):
+    """Frontmatter `sources:` au format block-list → les articles sont liés."""
+    import json
+
+    import grid_builder as gb
+    import ledger as ledger_mod
+    import status_table
+    from frontmatter import parse_frontmatter
+
+    pdfs = cfg.RAW / "pdfs"
+    pdfs.mkdir(parents=True, exist_ok=True)
+    (pdfs / "nav.pdf.txt").write_text("Contenu.\n", encoding="utf-8")
+    toc = {
+        "title": "Navigation",
+        "source": "raw/pdfs/nav.pdf",
+        "pages": 100,
+        "ocr": False,
+        "chapters": [
+            {"order": 1, "title": "Instruments", "page_start": 1, "page_end": 20},
+            {"order": 2, "title": "Positionnement", "page_start": 21, "page_end": 50},
+        ],
+    }
+    (pdfs / "nav.toc.json").write_text(json.dumps(toc, ensure_ascii=False), encoding="utf-8")
+
+    nav = cfg.WIKI / "navigation"
+    nav.mkdir(parents=True, exist_ok=True)
+    # Forme BLOCK-LIST dans le frontmatter (c'est précisément le bug d'origine)
+    block_article = (
+        "---\n"
+        'title: "Relèvement"\n'
+        "subject: navigation\n"
+        "tags: [navigation]\n"
+        "sources:\n"
+        "  - raw/pdfs/nav.pdf.txt#ch2\n"
+        "created: 2026-06-08\n"
+        "updated: 2026-06-08\n"
+        "---\n\n"
+        "# Relèvement\n\n> Mesure.\n\n## Définition\nTexte.\n"
+    )
+    nav.joinpath("relevement.md").write_text(block_article, encoding="utf-8")
+
+    rows = [status_table.StatusRow(
+        fichier="nav.pdf.txt", sha256="sha-block", statut="compilé",
+        articles="[[navigation/relevement]]", maj="2026-06-08")]
+    status_table.save_status(pdfs / "_status.md", "pdfs", rows, work_root=cfg.work_root)
+
+    led = {}
+    ledger_mod.record(led, "raw/pdfs/nav.pdf.txt", "sha-block",
+                      ["navigation/relevement"], updated="2026-06-08")
+    ledger_mod.save_ledger(cfg.LEDGER, led, work_root=cfg.work_root)
+
+    # Sanity : parse_frontmatter AVEC ce change sait lire le block-list
+    front, _ = parse_frontmatter(block_article)
+    assert front["sources"] == ["raw/pdfs/nav.pdf.txt#ch2"]
+
+    # Et la grille générée lie bien l'article à son chapitre
+    res = gb.build_grid(cfg, "raw/pdfs/nav.pdf.txt")
+    assert res.skipped is None
+    assert res.linked_articles == ["navigation/relevement"]
+    body = res.markdown
+    assert "## Ch. 2 — Positionnement" in body
+    assert "[[navigation/relevement]]" in body
+
+    # Round-trip orchestrateur
+    out = wrg.cmd_generate(cfg, "raw/pdfs/nav.pdf.txt", skip_sync=True)
+    assert out.status == "généré"
+    assert out.result is not None
+    assert out.result.linked_articles == ["navigation/relevement"]
+    assert out.grid_path.startswith("reading-grids/")

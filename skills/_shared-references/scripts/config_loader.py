@@ -46,7 +46,31 @@ DEFAULT_LAYOUT = {
 #: Nom de dossier des assets (un par sujet wiki ET un par type raw — vigilance §12.14).
 ASSETS_DIRNAME = "_assets"
 
-VALID_BACKENDS = {"rclone", "git"}
+VALID_BACKENDS = {"rclone", "git", "obsidian", "auto"}
+
+#: Version de structure **attendue par le code courant** (capability
+#: `vault-migration`). C'est la valeur à laquelle un vault fraîchement amorcé
+#: doit arriver. Bumpée par chaque change de palier (v2, v3, v4…) — voir
+#: `openspec/changes/add-vault-schema-migration/proposal.md` pour la table.
+#:
+#: v1 (baseline, `add-vault-schema-migration`)   : pose de `.mimir/vault.json`,
+#:                                                aucun changement de structure.
+#: v2 (`migrate-pdf-assets-per-source`)         : assets PDF/EPUB regroupés
+#:                                                sous `_assets/<base>/`.
+#: v3 (`refit-web-extraction-fidelity`)         : web clipping fidèle
+#:                                                (`.html` immuable + .md
+#:                                                re-dérivable + assets par
+#:                                                slug).
+#: v4 (`rework-reading-grid-as-guide`)          : grilles de lecture au
+#:                                                format guide (charpente +
+#:                                                zone blurb éditoriale).
+EXPECTED_SCHEMA = 4
+
+#: Chemin du marqueur de version **dans la zone synchronisée** (vs le ledger
+#: `.wiki/` qui est machine-local, hors sync). Fixé (pas configurable via
+#: `layout`) car c'est l'**adresse canonique** que toute machine ouvrant un
+#: vault doit pouvoir lire.
+VAULT_META_REL = Path(".mimir") / "vault.json"
 
 #: Variable d'environnement pointant le `wiki.config.json` actif (cf. MIMIR_SHARED).
 ENV_CONFIG = "MIMIR_CONFIG"
@@ -114,6 +138,29 @@ class Config:
         return ASSETS_DIRNAME
 
     @property
+    def VAULT_META(self) -> Path:
+        """Chemin absolu du marqueur de version de structure (`.mimir/vault.json`).
+
+        **Synchronisé** : la version voyage avec le contenu, contrairement au
+        ledger `.wiki/` qui reste machine-local. Voir capability `vault-migration`.
+        """
+        return self.work_root / VAULT_META_REL
+
+    @property
+    def VAULT_META_DIR(self) -> Path:
+        """Dossier parent du marqueur (`.mimir/`) — utile pour la pose atomique."""
+        return self.VAULT_META.parent
+
+    @property
+    def SNAPSHOTS_DIR(self) -> Path:
+        """Dossier des snapshots de migration : **hors sync**, sous `.mimir/`.
+
+        Volumineux (copies de deltas) et local-only : exclu du périmètre rclone
+        et de `sync.git.scope` (cf. spec `vault-migration` §1.3).
+        """
+        return self.VAULT_META_DIR / "snapshots"
+
+    @property
     def backend(self) -> str:
         return str(self.sync.get("backend", "rclone"))
 
@@ -126,6 +173,7 @@ class Config:
             "WIKI": str(self.WIKI),
             "READING_GRIDS": str(self.READING_GRIDS),
             "LEDGER": str(self.LEDGER),
+            "VAULT_META": str(self.VAULT_META),
             "MODE": self.mode,
             "BACKEND": self.backend,
         }

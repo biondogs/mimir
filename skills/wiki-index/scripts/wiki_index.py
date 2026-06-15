@@ -1,38 +1,42 @@
 #!/usr/bin/env python3
 """wiki-index — régénère les index du wiki et audite les liens (SPEC §9).
 
-Skill **déterministe** : aucune prose à inventer. Deux sous-commandes :
+Skill **déterministe** : aucune prose à inventer. Trois sous-commandes :
 
     wiki_index.py --config CFG regenerate [--skip-sync] [--dry-run]
     wiki_index.py --config CFG audit [--json]
+    wiki_index.py --config CFG fix [--apply] [--scope S]… [--semantic-map map.json] [--json]
 
 - `regenerate` : reconstruit `wiki/INDEX.md` (sujets) + tous les `wiki/<sujet>/_INDEX.md`
   (notions + grilles). Écriture atomique confinée. Préserve la description éditoriale
   des sujets dans l'INDEX principal.
-- `audit` : **lecture seule**, 3 passes (liens cassés / fichiers fantômes / index → vide).
-  Code retour **0 ssi 0 anomalie** — exploitable en CI / pour le DoD.
+- `audit` : **lecture seule**, 4 passes (liens cassés / fichiers fantômes / index → vide
+  / CJK parasites). Code retour **0 ssi 0 anomalie** — exploitable en CI / pour le DoD.
+- `fix` : **réparation assistée** des wikilinks cassés, opt-in (n'écrit jamais sans
+  `--apply`). Détection réutilise `audit` ; passes de matching ordonnées (override →
+  identité → préfixe → mots) ; réécriture atomique confinée.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from datetime import date
 from pathlib import Path
 
-# --- bootstrap : rendre le socle partagé importable (hors tests) -----------
-_SHARED = Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"
-for _cand in (os.environ.get("MIMIR_SHARED"), _SHARED):
-    if _cand and Path(_cand).is_dir() and str(_cand) not in sys.path:
-        sys.path.insert(0, str(_cand))
-        break
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+# --- bootstrap : importer le socle via le module unifié `bootstrap` ---------
+# (L'insertion de sys.path est centralisée dans `bootstrap._ensure_socle_path` :
+#  MIMIR_SHARED honoré, idempotent, fail fast sur symbole manquant.)
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_shared-references" / "scripts"))
+import bootstrap  # noqa: E402,F401  (socle mutualisé ; voir skills/_shared-references/scripts/bootstrap.py)
 
 import config_loader  # noqa: E402
 
+import fix_broken_wikilinks  # noqa: E402
 import index_builder  # noqa: E402
 import link_audit  # noqa: E402
 import sync  # noqa: E402  (moteur de synchro partagé : pull/push)
@@ -57,6 +61,13 @@ def cmd_audit(cfg):
     return link_audit.audit(cfg)
 
 
+def cmd_fix(cfg, *, scope, semantic_map, apply, json_out):
+    """Réparation assistée des wikilinks cassés (opt-in, écrit sur demande)."""
+    return fix_broken_wikilinks.repair(
+        cfg, scope=scope, semantic_map_path=semantic_map, apply=apply,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Index + audit liens du wiki (Mimir).")
     parser.add_argument(
@@ -72,6 +83,25 @@ def main(argv: list[str] | None = None) -> int:
 
     p_aud = sub.add_parser("audit", help="Audit liens (3 passes, lecture seule).")
     p_aud.add_argument("--json", action="store_true", help="Rapport machine (JSON).")
+
+    p_fix = sub.add_parser(
+        "fix", help="Réparation assistée des wikilinks cassés (dry-run par défaut).",
+    )
+    p_fix.add_argument(
+        "--scope", action="append", default=None,
+        help="Sujet à borner (répétable) ; défaut = tout le vault.",
+    )
+    p_fix.add_argument(
+        "--semantic-map", default=None,
+        help="Chemin d'un JSON {cible_cassée: cible_proposée} (passe 0, marqueur 🧠).",
+    )
+    p_fix.add_argument(
+        "--apply", action="store_true",
+        help="Réécrit les wikilinks (défaut : dry-run, n'écrit rien).",
+    )
+    p_fix.add_argument(
+        "--json", action="store_true", help="Rapport machine (JSON).",
+    )
 
     args = parser.parse_args(argv)
     cfg = config_loader.load_resolved_config(args.config)
@@ -93,10 +123,41 @@ def main(argv: list[str] | None = None) -> int:
                 "broken": report.broken,
                 "orphans": report.orphans,
                 "dangling": report.dangling,
+                "cjk": report.cjk,
             }, ensure_ascii=False, indent=2))
         else:
             print(link_audit.render_report(report, today=_today()))
         return 0 if report.ok else 1
+
+    if args.cmd == "fix":
+        report = cmd_fix(
+            cfg, scope=args.scope, semantic_map=args.semantic_map,
+            apply=args.apply, json_out=args.json,
+        )
+        if args.json:
+            print(json.dumps({
+                "proposals": [
+                    {
+                        "src": p.src, "broken": p.broken, "target": p.target,
+                        "target_path": p.target_path, "provenance": p.provenance,
+                        "marker": p.marker, "score": (
+                            None if p.score == float("inf") else p.score
+                        ),
+                    }
+                    for p in report.proposals
+                ],
+                "rewrites": [
+                    {"src": s, "old": o, "new": n}
+                    for s, o, n in report.rewrites
+                ],
+                "audit_after_ok": report.audit_after_ok,
+            }, ensure_ascii=False, indent=2))
+        else:
+            print(fix_broken_wikilinks.render_report(
+                report, today=_today(), applied=args.apply,
+            ))
+        # Code retour : 0 si rien à signaler (rien cassé OU tout résolu), 1 sinon.
+        return 0 if not report.proposals else 1
 
     return 2
 

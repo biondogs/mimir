@@ -36,8 +36,68 @@
       "properties": {
         "backend": {
           "type": "string",
-          "enum": ["rclone", "git"],
-          "description": "Backend de synchro sélectionné (§10)."
+          "enum": ["rclone", "git", "obsidian", "auto"],
+          "description": "Backend de synchro sélectionné (§10). `auto` sonde Obsidian et bascule dynamiquement (Obsidian d'abord, rclone en repli durci, bascule intra-run si validate Obsidian KO)."
+        },
+        "presync_gate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in (§10 sync-vault) : avant `push`/`sync`, lance `wiki-index audit` via le runner injectable. Si l'audit signale une anomalie (lien cassé, CJK parasite, etc.), le push est avorté (exit non-zéro) et l'état local est préservé."
+        },
+        "obsidian": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Configuration du backend `obsidian` (délégation à Remotely Save via Local REST API). Le secret N'EST PAS ici : voir `api_key_env`.",
+          "properties": {
+            "base_url": {
+              "type": "string",
+              "default": "https://127.0.0.1:27124",
+              "description": "URL HTTPS du plugin Local REST API Obsidian (port 27124, certificat auto-signé)."
+            },
+            "api_key_env": {
+              "type": "string",
+              "default": "MIMIR_OBSIDIAN_API_KEY",
+              "description": "NOM de la variable d'environnement portant la clé d'API (jamais le secret dans le JSON)."
+            },
+            "vault_name": {
+              "type": "string",
+              "description": "Nom du vault Obsidian (utilisé pour l'URI macOS `obsidian://open?vault=<name>`)."
+            },
+            "command_id": {
+              "type": "string",
+              "default": "remotely-save:start-sync",
+              "description": "Identifiant complet de la commande Remotely Save à déclencher."
+            },
+            "auto_launch": {
+              "type": "boolean",
+              "default": false,
+              "description": "Opt-in : tente de lancer Obsidian (best-effort) s'il n'est pas joignable. Gardé par détection d'affichage (Linux : $DISPLAY/$WAYLAND_DISPLAY ; macOS : toujours)."
+            },
+            "launch_cmd": {
+              "type": "string",
+              "description": "Commande de lancement Obsidian (override plateforme). macOS défaut : `open -a Obsidian`. Linux : `launch_cmd` requis (binaire/AppImage/flatpak)."
+            },
+            "ready_timeout_s": {
+              "type": "integer",
+              "default": 30,
+              "description": "Durée max (s) du poll `GET /` après lancement d'Obsidian."
+            },
+            "post_sync_wait_s": {
+              "type": "integer",
+              "default": 20,
+              "description": "Settle (s) après le trigger Remotely Save avant le comptage de validation."
+            },
+            "verify_tls": {
+              "type": "boolean",
+              "default": false,
+              "description": "Vérifier le certificat TLS du Local REST API (False = tolère le cert auto-signé)."
+            },
+            "tolerance": {
+              "type": "integer",
+              "default": 5,
+              "description": "Tolérance d'écart de comptage local↔distant pour la validation."
+            }
+          }
         },
         "rclone": {
           "type": "object",
@@ -83,8 +143,8 @@
             "scope": {
               "type": "array",
               "items": { "type": "string" },
-              "description": "Sous-arbres versionnés (dropzone _inbox incluse, SPEC §6).",
-              "default": ["_inbox", "raw", "wiki", "reading-grids"]
+              "description": "Sous-arbres versionnés (dropzone _inbox incluse, SPEC §6). `.mimir/` est inclus pour que la version de structure voyage avec le vault (cf. spec `vault-migration`) ; les snapshots (`.mimir/snapshots/`) restent **hors** sync et sont exclus via `.gitignore` ou les filtres rclone.",
+              "default": ["_inbox", "raw", "wiki", "reading-grids", ".mimir"]
             }
           }
         }

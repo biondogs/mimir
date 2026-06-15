@@ -1,12 +1,15 @@
 """Tests du CLI wiki-init : création idempotente, confinement, diagnostic, amorçage sync."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import wiki_init
+import vault_meta
 from sync import locking as sync_lock
+from config_loader import EXPECTED_SCHEMA
 
 
 @pytest.fixture(autouse=True)
@@ -125,3 +128,93 @@ def test_apply_noop_sans_cle_sync_reussit(tmp_path):
     cfgp, work = _make_config(tmp_path)
     assert wiki_init.main(["--config", cfgp, "apply"]) == 0
     assert (work / "_inbox").is_dir()
+
+
+# --- 5.1 : marqueur de version (.mimir/vault.json) ------------------------
+
+def test_apply_pose_marqueur_a_expected_sur_vault_vierge(tmp_path):
+    """Sur un vault vierge (aucun raw, aucun wiki) : .mimir/vault.json est posé
+    à `EXPECTED_SCHEMA`."""
+    cfgp, work = _make_config(tmp_path)
+    assert wiki_init.main(["--config", cfgp, "apply", "--skip-sync"]) == 0
+    meta = work / ".mimir" / "vault.json"
+    assert meta.is_file()
+    assert vault_meta.read_vault_schema(_reload_cfg(cfgp)) == EXPECTED_SCHEMA
+
+
+def test_apply_pose_baseline_1_sur_vault_peuple_sans_marqueur(tmp_path):
+    """6.6 : un vault peuplé (raw/ contient des fichiers, pas de .mimir/)
+    reçoit la baseline 1, AUCUNE migration n'est exécutée."""
+    cfgp, work = _make_config(tmp_path)
+    # Crée un raw/ avec du contenu (vault déjà peuplé)
+    (work / "raw" / "pdfs").mkdir(parents=True)
+    (work / "raw" / "pdfs" / "foo.pdf.txt").write_text("contenu", encoding="utf-8")
+    # Crée un article wiki
+    (work / "wiki" / "nav").mkdir(parents=True)
+    (work / "wiki" / "nav" / "releve.md").write_text(
+        "---\ntitle: r\n---\n\n# r\n", encoding="utf-8"
+    )
+    # Pas de .mimir/vault.json
+    assert not (work / ".mimir" / "vault.json").exists()
+    assert wiki_init.main(["--config", cfgp, "apply", "--skip-sync"]) == 0
+    # Le marqueur est posé à 1 (baseline), pas à EXPECTED_SCHEMA
+    meta = work / ".mimir" / "vault.json"
+    assert meta.is_file()
+    cfg = _reload_cfg(cfgp)
+    assert vault_meta.read_vault_schema(cfg) == 1
+    # Les articles et le raw sont INTACTS (pas de migration)
+    assert (work / "raw" / "pdfs" / "foo.pdf.txt").is_file()
+    assert (work / "wiki" / "nav" / "releve.md").is_file()
+
+
+def test_apply_ne_reecrase_pas_le_marqueur_existant(tmp_path):
+    """Si `.mimir/vault.json` existe déjà, apply ne l'écrase pas (jamais)."""
+    cfgp, work = _make_config(tmp_path)
+    # On pose manuellement un marqueur à 5 (par exemple)
+    work.mkdir(parents=True, exist_ok=True)
+    (work / ".mimir").mkdir(parents=True, exist_ok=True)
+    (work / ".mimir" / "vault.json").write_text(
+        json.dumps({"schema": 5, "migrated": "2026-01-01", "history": []}),
+        encoding="utf-8",
+    )
+    assert wiki_init.main(["--config", cfgp, "apply", "--skip-sync"]) == 0
+    # Le marqueur est INTACT (schema = 5)
+    cfg = _reload_cfg(cfgp)
+    assert vault_meta.read_vault_schema(cfg) == 5
+
+
+# --- 5.2 : status affiche SCHEMA vs EXPECTED ------------------------------
+
+def test_status_affiche_schema_et_pending(tmp_path, capsys):
+    """`status` affiche `SCHEMA=<vault>`, `EXPECTED=<code>` et la liste
+    des paliers en attente (lecture seule)."""
+    cfgp, work = _make_config(tmp_path)
+    # Cas 1 : vault vierge (baseline 1 par défaut, EXPECTED=1 → à jour)
+    assert wiki_init.main(["--config", cfgp, "status"]) == 0
+    out = capsys.readouterr().out
+    assert f"SCHEMA=1" in out
+    assert f"EXPECTED={EXPECTED_SCHEMA}" in out
+    if EXPECTED_SCHEMA == 1:
+        assert "à jour" in out
+
+
+def test_status_affiche_retard_si_vault_en_retard(tmp_path, monkeypatch, capsys):
+    """Si on force EXPECTED_SCHEMA > 1, status doit signaler le retard."""
+    monkeypatch.setattr(wiki_init, "_expected_schema", lambda: 3)
+    cfgp, work = _make_config(tmp_path)
+    assert wiki_init.main(["--config", cfgp, "status"]) == 0
+    out = capsys.readouterr().out
+    # vault.schema = 1 (baseline) ; EXPECTED = 3
+    assert "SCHEMA=1" in out
+    assert "EXPECTED=3" in out
+    assert "retard" in out
+    # Pas d'écriture (lecture seule)
+    assert not (work / ".mimir").exists()
+
+
+# --- helpers ---------------------------------------------------------------
+
+def _reload_cfg(cfgp: str):
+    """Recharge un `Config` depuis son chemin (post-apply)."""
+    import config_loader
+    return config_loader.load_config(cfgp)

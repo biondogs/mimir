@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .base import SyncBackend
 
-_DEFAULT_SCOPE = ["_inbox", "raw", "wiki", "reading-grids"]
+_DEFAULT_SCOPE = ["_inbox", "raw", "wiki", "reading-grids", ".mimir"]
 _NOTHING_TO_COMMIT = ("nothing to commit", "nothing added to commit", "no changes added")
 
 
