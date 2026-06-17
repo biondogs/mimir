@@ -8,7 +8,7 @@ description: >
   « génère les articles de ce sujet ». Strictement web (PDF/EPUB → wiki-ingest).
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, karpathy, batch, web]
   hermes:

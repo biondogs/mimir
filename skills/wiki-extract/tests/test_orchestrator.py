@@ -61,27 +61,80 @@ def _drop(cfg, name, data=b"%PDF-binaire"):
 
 # --- robustesse _inbox/ : les intrus n'interrompent pas le scan -----------
 def test_scan_inbox_trie_supportes_et_intrus(cfg):
-    """`.pdf`/`.epub` → à extraire ; `README.md`/`.txt` → ignorés ; `.`/.DS_Store écartés."""
+    """`.pdf`/`.epub`/`.md` → à extraire ; `.txt` → ignorés ; `.`/.DS_Store écartés.
+
+    Note (palier `route-md-inbox-notes`) : un `README.md` est désormais une
+    extension **supportée** — il devient une note (la discipline `_inbox/`
+    reste une responsabilité utilisateur, cf. spec `extract-source`).
+    """
     _drop(cfg, "guide.pdf")
     _drop(cfg, "livre.epub")
     _drop(cfg, "README.md", data=b"# procedure")
     _drop(cfg, "notes.txt", data=b"texte")
     _drop(cfg, ".DS_Store", data=b"\x00")
     to_extract, skipped = wiki_extract.scan_inbox(cfg)
-    assert sorted(p.name for p in to_extract) == ["guide.pdf", "livre.epub"]
-    assert sorted(p.name for p in skipped) == ["README.md", "notes.txt"]  # .DS_Store ni l'un ni l'autre
+    assert sorted(p.name for p in to_extract) == ["README.md", "guide.pdf", "livre.epub"]
+    assert sorted(p.name for p in skipped) == ["notes.txt"]  # .DS_Store ni l'un ni l'autre
 
 
 def test_run_ne_crashe_pas_sur_readme(cfg, monkeypatch):
-    """Un README.md dans `_inbox/` ne fait plus échouer le batch ; le .pdf est traité."""
-    _install_fake(monkeypatch, content="Texte du PDF.\n")
+    """Un README.md dans `_inbox/` ne fait plus échouer le batch ; le .pdf est traité.
+
+    Changement de comportement (palier `route-md-inbox-notes`) : un `README.md`
+    est désormais extrait comme note (status `extrait`), pas ignoré. Le test
+    installe un fake `pdfs` ET un fake `notes` pour couvrir les deux branches.
+    """
+    fake_pdf_called = {"n": 0}
+    fake_notes_called = {"n": 0}
+
+    class FakePdf:
+        SUPPORTED_EXTS = set()
+
+        @staticmethod
+        def extract(source, *, lang="fra+eng"):
+            fake_pdf_called["n"] += 1
+            return ExtractResult(
+                raw_content="Texte du PDF.\n",
+                content_ext="pdf.txt",
+                metadata={"title": "book", "pages": 3, "ocr": False, "source": str(source)},
+                structure=[Chapter(1, "Ch1", 1, 3)],
+                assets=[],
+                doc_type="pdfs",
+            )
+
+    class FakeNotes:
+        SUPPORTED_EXTS = set()
+
+        @staticmethod
+        def extract(source, *, lang="fra+eng"):
+            fake_notes_called["n"] += 1
+            return ExtractResult(
+                raw_content="procedure body\n",
+                content_ext="md",
+                source_content=b"---\ntitle: proc\n---\n\nprocedure body\n",
+                source_ext="src.md",
+                metadata={"title": "proc", "type": "note", "created": "2026-06-16"},
+                structure=[],
+                assets=[],
+                doc_type="notes",
+            )
+
+    def get_extractor(src):
+        if wiki_extract.extractors.doc_type_for(src) == "notes":
+            return FakeNotes
+        return FakePdf
+
+    monkeypatch.setattr(wiki_extract.extractors, "get_extractor", get_extractor)
     _drop(cfg, "book.pdf")
     _drop(cfg, "README.md", data=b"# procedure")
     outcomes = wiki_extract.run(cfg, None, lang="fra+eng", dry_run=False, skip_sync=True)
     statuses = sorted(o.status for o in outcomes)
-    assert statuses == ["extrait", "ignored"]
+    assert statuses == ["extrait", "extrait"]
     assert (cfg.RAW / "pdfs" / "book.pdf.txt").is_file()
-    assert (cfg.INBOX / "README.md").is_file()            # intrus laissé en place
+    # README.md est désormais routé vers notes (Décision 3 — assumé)
+    assert any("README" in o.source for o in outcomes if o.status == "extrait")
+    # les deux extracteurs ont été appelés
+    assert fake_pdf_called["n"] == 1 and fake_notes_called["n"] == 1
     # code retour non-erreur
     assert not any(o.status == "error" for o in outcomes)
 
@@ -429,3 +482,271 @@ def test_skip_sync_court_circuite(cfg, monkeypatch):
     monkeypatch.setattr(wiki_extract.sync, "push", lambda c: (_ for _ in ()).throw(AssertionError("push")))
     out = wiki_extract.run(cfg, None, lang="x", dry_run=False, skip_sync=True)
     assert out[0].status == "extrait"
+
+
+# --- palier `route-md-inbox-notes` : routage des `.md` de `_inbox/` --------
+# Un `.md` déposé est sa propre matière source (pas de `.html` parent
+# re-dérivable). On introduit un `doc_type = "notes"` distinct du web :
+#   1. `raw/notes/<base>.src.md` = original verbatim (immuable)
+#   2. `raw/notes/<base>.md`      = dérivation (frontmatter normalisé)
+# Pas de double frontmatter, pas de sidecar `.html`, pas de dédup URL.
+
+
+def _install_fake_notes(monkeypatch, *, source_bytes, title, created, source=None):
+    """Installe un faux extracteur `notes` qui produit un `ExtractResult`
+    cohérent avec ce que renvoie `markdown.extract()` en pratique. Le frontmatter
+    de l'original est déjà strippé dans `raw_content` (le corps seul)."""
+
+    class FakeNotes:
+        SUPPORTED_EXTS = set()
+
+        @staticmethod
+        def extract(src, *, lang="fra+eng"):
+            metadata: dict = {"title": title, "type": "note", "created": created}
+            if source:
+                metadata["source"] = source
+            return ExtractResult(
+                raw_content="Corps de la note.\n",
+                content_ext="md",
+                source_content=source_bytes,
+                source_ext="src.md",
+                metadata=metadata,
+                structure=[],
+                assets=[],
+                doc_type="notes",
+            )
+
+    def get_extractor(src):
+        return FakeNotes
+
+    monkeypatch.setattr(wiki_extract.extractors, "get_extractor", get_extractor)
+
+
+def test_note_avec_frontmatter_routee_vers_notes(cfg, monkeypatch):
+    """5.1 — `.md` avec frontmatter déposé en `_inbox/` → `raw/notes/<slug>.md`
+    (frontmatter normalisé) + `<slug>.src.md` (verbatim), `_inbox/` vidé."""
+    original = (
+        b"---\n"
+        b"title: Ma Note\n"
+        b"source: https://exemple.org/clip\n"
+        b"author: moi\n"
+        b"---\n\n"
+        b"# Ma Note\n\nCorps de la note avec un auteur perso.\n"
+    )
+    _install_fake_notes(
+        monkeypatch,
+        source_bytes=original,
+        title="Ma Note",
+        created="2026-06-16",
+        source="https://exemple.org/clip",
+    )
+    _drop(cfg, "ma-note.md", data=original)
+    outcomes = wiki_extract.run(cfg, None, lang="x", dry_run=False, skip_sync=True)
+
+    assert [o.status for o in outcomes] == ["extrait"]
+    notes = cfg.RAW / "notes"
+    # Le `.src.md` est l'original **verbatim** (octet pour octet)
+    src_path = notes / "ma-note.src.md"
+    assert src_path.is_file()
+    assert src_path.read_bytes() == original
+    # Le `.md` dérivé porte un frontmatter normalisé
+    md_path = notes / "ma-note.md"
+    assert md_path.is_file()
+    md_text = md_path.read_text(encoding="utf-8")
+    assert md_text.startswith("---\n")
+    assert "type: note" in md_text
+    assert "title: \"Ma Note\"" in md_text
+    assert "source: https://exemple.org/clip" in md_text
+    assert "tags: [clippings]" in md_text
+    # `_inbox/` est vidé
+    assert list(cfg.INBOX.iterdir()) == []
+    # _status.md contient la ligne (SHA du contenu dérivé)
+    status = (notes / "_status.md").read_text(encoding="utf-8")
+    assert "ma-note.md" in status
+
+
+def test_note_sans_frontmatter_devient_note(cfg, monkeypatch, tmp_path):
+    """5.2 — `.md` sans frontmatter → title=basename, created=mtime, pas de crash."""
+    # Pas de frontmatter : on laisse l'extracteur `markdown` réel faire son
+    # travail (pas de mock) — on passe par `process_source` directement.
+    raw_text = b"# procedure\n\n- etape 1\n- etape 2\n"
+    p = cfg.INBOX / "readme.md"
+    p.write_bytes(raw_text)
+    # date de mtime déterministe (pour le `created` dérivé)
+    import os
+    import time
+
+    fixed_mtime = time.mktime(time.strptime("2026-06-10", "%Y-%m-%d"))
+    os.utime(p, (fixed_mtime, fixed_mtime))
+
+    out = wiki_extract.process_source(
+        cfg, str(p), from_inbox=True, lang="x", dry_run=False
+    )
+    assert out.status == "extrait"
+    notes = cfg.RAW / "notes"
+    assert (notes / "readme.src.md").read_bytes() == raw_text
+    md_text = (notes / "readme.md").read_text(encoding="utf-8")
+    assert "type: note" in md_text
+    assert "title: \"readme\"" in md_text
+    assert "created: 2026-06-10" in md_text
+    # Pas de `source:` inventé
+    assert "source:" not in md_text.split("tags:")[0]
+    # _inbox/ vidé
+    assert not p.exists()
+
+
+def test_redepot_note_dedup_sha(cfg, monkeypatch):
+    """5.3 — re-dépôt du même `.md` → `skipped_duplicate` (SHA de contenu)."""
+    original = b"---\ntitle: A\n---\n\nCorps identique.\n"
+    _install_fake_notes(
+        monkeypatch,
+        source_bytes=original,
+        title="A",
+        created="2026-06-16",
+    )
+    _drop(cfg, "a.md", data=original)
+    wiki_extract.run(cfg, None, lang="x", dry_run=False, skip_sync=True)
+
+    # Re-dépôt (autre nom) au MÊME contenu
+    redo = _drop(cfg, "copie.md", data=original)
+    outcomes = wiki_extract.run(cfg, None, lang="x", dry_run=False, skip_sync=True)
+    skipped = [o for o in outcomes if o.status == "skipped_duplicate"]
+    assert len(skipped) == 1
+    assert not redo.exists()  # supprimé de _inbox/
+    notes = cfg.RAW / "notes"
+    # Aucun `-2` créé
+    assert not list(notes.glob("*-2*.md"))
+
+
+def test_note_pas_de_double_frontmatter_ni_html(cfg, monkeypatch):
+    """Le `.md` dérivé a un frontmatter normalisé (pas empilé) et **aucun**
+    sidecar `.html` n'est écrit (la branche web n'est pas empruntée)."""
+    original = b"---\ntitle: B\nauthor: x\n---\n\nCorps B\n"
+    _install_fake_notes(monkeypatch, source_bytes=original, title="B", created="2026-06-16")
+    _drop(cfg, "b.md", data=original)
+    wiki_extract.run(cfg, None, lang="x", dry_run=False, skip_sync=True)
+
+    notes = cfg.RAW / "notes"
+    md_text = (notes / "b.md").read_text(encoding="utf-8")
+    # Un seul bloc frontmatter, pas de wrap web
+    assert md_text.count("---") == 2
+    assert "type: web" not in md_text
+    assert "type: note" in md_text
+    # Pas de sidecar .html
+    assert not list(notes.glob("*.html"))
+
+
+def test_note_src_md_et_md_partagent_suffixe_collision(cfg, monkeypatch):
+    """Si `<base>.md` et `<base>.src.md` sont déjà pris, le suffixage `-N` est
+    partagé entre les deux fichiers du triplet (cohérent avec le triplet web)."""
+    original1 = b"---\ntitle: C\n---\n\nCorps C v1\n"
+    original2 = b"---\ntitle: C\n---\n\nCorps C v2 different\n"
+
+    # Fake qui varie le `raw_content` selon l'entrée, pour que la dédup SHA
+    # voie bien un contenu différent au 2e dépôt.
+    class FakeNotesVar:
+        SUPPORTED_EXTS = set()
+
+        @staticmethod
+        def extract(src, *, lang="fra+eng"):
+            data = Path(str(src)).read_bytes()
+            return ExtractResult(
+                raw_content=data.decode("utf-8", errors="replace"),
+                content_ext="md",
+                source_content=data,
+                source_ext="src.md",
+                metadata={"title": "C", "type": "note", "created": "2026-06-16"},
+                structure=[],
+                assets=[],
+                doc_type="notes",
+            )
+
+    def get_extractor(src):
+        return FakeNotesVar
+
+    monkeypatch.setattr(wiki_extract.extractors, "get_extractor", get_extractor)
+
+    # Premier dépôt : crée `c.src.md` et `c.md`
+    _drop(cfg, "c.md", data=original1)
+    wiki_extract.run(cfg, None, lang="x", dry_run=False, skip_sync=True)
+
+    # Deuxième dépôt au même nom (le 1er a été bougé dans raw/) — contenu
+    # différent → nouvelle entrée avec suffixage -2 partagé.
+    _drop(cfg, "c.md", data=original2)
+    outcomes = wiki_extract.run(cfg, None, lang="x", dry_run=False, skip_sync=True)
+    # Le contenu a changé → nouvelle entrée (suffixage -2 partagé)
+    assert outcomes[0].status == "extrait"
+    assert outcomes[0].suffixed is True
+    notes = cfg.RAW / "notes"
+    assert (notes / "c-2.md").is_file()
+    assert (notes / "c-2.src.md").is_file()
+    # Pas de `-3`
+    assert not (notes / "c-3.md").exists()
+
+
+def test_extracteur_markdown_passthrough():
+    """5.x — test direct de l'extracteur `markdown.py` (sans orchestrateur)."""
+    import tempfile
+
+    from extractors.markdown import extract as md_extract
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "test.md"
+        p.write_bytes(
+            b"---\n"
+            b"title: Le Titre\n"
+            b"source: https://exemple.org/clip\n"
+            b"---\n\n"
+            b"# Le Titre\n\nContenu.\n"
+        )
+        r = md_extract(str(p))
+        assert r.doc_type == "notes"
+        assert r.content_ext == "md"
+        assert r.source_ext == "src.md"
+        assert r.source_content.startswith(b"---\n")
+        # Le body est strippé du frontmatter
+        assert r.raw_content.startswith("# Le Titre")
+        assert "title:" not in r.raw_content
+        assert r.metadata["title"] == "Le Titre"
+        assert r.metadata["source"] == "https://exemple.org/clip"
+        assert r.metadata["type"] == "note"
+
+
+def test_extracteur_markdown_sans_frontmatter(tmp_path):
+    """Un `.md` sans frontmatter : title=basename, created=mtime, pas de crash."""
+    from datetime import date
+    from pathlib import Path
+
+    from extractors.markdown import extract as md_extract
+
+    p = tmp_path / "notes-perso.md"
+    p.write_bytes(b"juste du texte, pas de frontmatter\n")
+    r = md_extract(str(p))
+    assert r.metadata["title"] == "notes-perso"
+    assert r.metadata["type"] == "note"
+    assert r.metadata["created"] == date.today().isoformat()
+    assert "source" not in r.metadata
+    assert r.raw_content == "juste du texte, pas de frontmatter\n"
+
+
+def test_extracteur_markdown_frontmatter_malforme(tmp_path):
+    """Un frontmatter YAML cassé ne fait PAS échouer le lot : on dérive
+    title/created par défaut, corps = fichier entier (Décision 2 / spec)."""
+    from extractors.markdown import extract as md_extract
+
+    p = tmp_path / "broken.md"
+    p.write_bytes(
+        b"---\n"
+        b"title: ok\n"
+        b"  bad indent: : ::\n"
+        b"unclosed: [\n"
+        b"---\n\n"
+        b"corps qui suit\n"
+    )
+    r = md_extract(str(p))
+    # Pas d'exception, et la dérive par défaut prend le relais
+    assert r.doc_type == "notes"
+    # En cas de fallback stdlib, on garde au moins `title` (parsing naïf)
+    # OU on retombe sur le basename — l'un ou l'autre est acceptable tant
+    # qu'on n'invente rien.
+    assert r.metadata.get("title") in ("ok", "broken")

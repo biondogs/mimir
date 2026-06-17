@@ -7,7 +7,7 @@ description: >
   sources », « décompose ce PDF en articles ». Borné à work_root.
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, karpathy, ingestion]
   hermes:
@@ -60,8 +60,11 @@ python scripts/wiki_ingest.py <inventory|write-article|finalize> …
    ```sh
    python scripts/wiki_ingest.py --config CFG inventory --skip-sync
    ```
+   L'inventaire scanne `raw/{pdfs,epubs,web,notes}`. Pour les notes, seul le `<base>.md` (dérivation
+   compilable) est listé ; le `<base>.src.md` (matière immuable) est filtré (cf. spec
+   `compile-source` « Inventaire différentiel par rapport au ledger »).
 3. **Lecture** — pour chaque source de la worklist, lis le **`.txt`** (contenu, économe en tokens)
-   et le **`.toc.json`** (chapitrage) ; web = le `.md`. Jamais le binaire.
+   et le **`.toc.json`** (chapitrage) ; web/notes = le `.md`. Jamais le binaire ni le `.src.md`.
 4. **Décomposition par notion** — produis **N notions atomiques**. Pour chacune, détermine le
    **sujet** et rédige le corps au **format Karpathy** :
 

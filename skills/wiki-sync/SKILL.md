@@ -10,7 +10,7 @@ description: >
   (confinement) ; verrou hors zone synchronisée.
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, sync, rclone, git]
   hermes:

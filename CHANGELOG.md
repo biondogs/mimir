@@ -8,6 +8,37 @@ suivent la même version (bump synchronisé).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-17
+
+### Fixed
+
+- **`wiki-extract` ne routait pas les `.md` déposés dans `_inbox/`** (bug
+  `_dev/wiki-extract-md-routing-bug-2026-06-16.md`). Les `.md` déposés
+  manuellement (clip web maison, `curl` + `markdownify`, test d'un nouveau
+  scraper) restaient orphelins : `doc_type_for` ne les mappait nulle part et
+  `is_supported` les classait parmi les « ignorés ». Le contournement était un
+  `mv _inbox/*.md raw/web/<slug>.md` manuel à chaque vague. Palier
+  `route-md-inbox-notes` (specs `extract-source` et `compile-source` modifiées) :
+  - Nouveau `doc_type` `notes` : `doc_type_for(".md") → "notes"`, scan `_inbox/`
+    étendu aux `.md`, message d'erreur « Format non supporté » mis à jour.
+  - Nouvel extracteur `extractors/markdown.py` (pass-through) : sépare
+    frontmatter/corps, dérive `title` (frontmatter ou basename) et `created`
+    (frontmatter ou `mtime`). Frontmatter YAML malformé ne fait plus échouer
+    le lot.
+  - Branche `notes` dans l'orchestrateur : écriture du triplet
+    `<base>.src.md` (original verbatim, immuable) + `<base>.md` (dérivation à
+    frontmatter normalisé `type: note`, `title`, `source?`, `created`,
+    `tags: [clippings]`) ; move depuis `_inbox/` après écriture réussie
+    (reprise sûre) ; dédup SHA de contenu (pas de dédup URL). Le slug est
+    dérivé du nom de fichier, pas du frontmatter.
+  - `wiki-ingest` : `_CONTENT_EXT["notes"] = ".md"` + filtre explicite
+    `*.src.md` dans `scan_content` (le piège principal : sans ce filtre, la
+    même note serait compilée deux fois — `.src.md` immuable + `.md` dérivé).
+  - Conséquence assumée : un `README.md` parasite déposé dans `_inbox/`
+    devient une note (la discipline `_inbox/` reste une responsabilité
+    utilisateur). 11 nouveaux tests hermétiques ; `pytest -q` passe de 433 à
+    **446 tests**.
+
 ## [0.6.0] - 2026-06-15
 
 ### Added

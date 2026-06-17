@@ -8,7 +8,7 @@ description: >
   démarrage ». Idempotent ; strictement borné à work_root (confinement).
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, init, bootstrap, setup]
   hermes:

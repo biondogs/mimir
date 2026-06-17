@@ -232,3 +232,73 @@ def test_status_skip_sync_par_defaut(cfg, monkeypatch):
     monkeypatch.setattr(wiki_ingest.sync, "push", lambda c: calls.__setitem__("push", calls["push"] + 1) or 0)
     wiki_ingest.cmd_status(cfg, skip_sync=True, dry_run=False)
     assert calls["pull"] == 0 and calls["push"] == 0
+
+
+# --- palier `route-md-inbox-notes` : scan `raw/notes/` ---------------------
+# 5.4 : `wiki-ingest` compile `<slug>.md` mais **ignore** `<slug>.src.md`
+# (matière immuable, pas de double compilation).
+
+
+def _seed_note(cfg, base="note-test", content="# Note test\n\nCorps.\n"):
+    notes = cfg.RAW / "notes"
+    notes.mkdir(parents=True, exist_ok=True)
+    # Dérivation compilable (frontmatter normalisé)
+    (notes / f"{base}.md").write_text(
+        f"---\ntitle: \"{base}\"\ntype: note\ncreated: 2026-06-16\ntags: [clippings]\n---\n\n{content}",
+        encoding="utf-8",
+    )
+    # Matière immuable verbatim (mimicking wiki-extract)
+    (notes / f"{base}.src.md").write_bytes(content.encode("utf-8"))
+    return f"raw/notes/{base}.md"
+
+
+def test_inventory_notes_compile_md_pas_src_md(cfg):
+    """5.4 — l'inventaire ne liste QUE le `<base>.md` (dérivation compilable).
+    Le `<base>.src.md` (matière immuable) est filtré — pas de double notion."""
+    rel = _seed_note(cfg)
+    data = wiki_ingest.cmd_inventory(cfg, None, skip_sync=True, dry_run=False)
+    paths = [w["content_path"] for w in data["worklist"]]
+    assert rel in paths
+    # Le `.src.md` n'apparaît PAS
+    assert "raw/notes/note-test.src.md" not in paths
+    # Le `doc_type` est bien `notes`
+    e = next(w for w in data["worklist"] if w["content_path"] == rel)
+    assert e["doc_type"] == "notes"
+    # Pas de toc.json pour les notes
+    assert e["toc_path"] is None
+
+
+def test_inventory_notes_idempotent_apres_finalize(cfg):
+    """Notes : finalize → l'inventaire ressort vide (cohérent avec PDF/EPUB)."""
+    rel = _seed_note(cfg)
+    e = wiki_ingest.cmd_inventory(cfg, None, skip_sync=True, dry_run=False)["worklist"][0]
+    r = wiki_ingest.cmd_write_article(
+        cfg, ArticleSpec(subject="notes", notion="Note test", body="# Note test\n\nx\n",
+                          sources=[e["content_path"]])
+    )
+    wiki_ingest.cmd_finalize(cfg, e["content_path"], e["sha256"], [r.wikilink], skip_sync=True)
+    again = wiki_ingest.cmd_inventory(cfg, None, skip_sync=True, dry_run=False)
+    assert again["worklist"] == []
+
+
+def test_inventory_notes_sha_change_recompile(cfg):
+    """Notes : si le contenu dérivé change, l'inventaire le ressort (r2 du SHA)."""
+    _seed_note(cfg, content="v1\n")
+    e = wiki_ingest.cmd_inventory(cfg, None, skip_sync=True, dry_run=False)["worklist"][0]
+    r = wiki_ingest.cmd_write_article(
+        cfg, ArticleSpec(subject="notes", notion="note-test", body="# note-test\n\nx\n",
+                          sources=[e["content_path"]])
+    )
+    wiki_ingest.cmd_finalize(cfg, e["content_path"], e["sha256"], [r.wikilink], skip_sync=True)
+
+    # Le contenu dérivé change
+    notes = cfg.RAW / "notes"
+    (notes / "note-test.md").write_text(
+        "---\ntitle: \"note-test\"\ntype: note\ncreated: 2026-06-16\ntags: [clippings]\n---\n\nv2 modifié\n",
+        encoding="utf-8",
+    )
+    again = wiki_ingest.cmd_inventory(cfg, None, skip_sync=True, dry_run=False)
+    paths = [w["content_path"] for w in again["worklist"]]
+    assert "raw/notes/note-test.md" in paths
+    # Toujours pas de `.src.md`
+    assert "raw/notes/note-test.src.md" not in paths

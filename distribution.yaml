@@ -16,7 +16,7 @@
 # cron de synchro : voir backlog (v0.5.0). Réf. spec `hermes-profile`.
 
 name: mimir
-version: "0.6.0"
+version: "0.6.1"
 description: "Curateur Mimir — entretient un wiki Obsidian (méthode Karpathy) : extrait des sources, compile par notion, indexe et synchronise."
 author: Vivian MAES
 license: PolyForm-Noncommercial-1.0.0

@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 """Inventaire de `raw/` et sélection des sources à (re)compiler (SPEC §7.2–§7.3).
 
-On liste les **fichiers de contenu** (`.pdf.txt` / `.epub.txt` / web `.md`) — jamais
-les binaires, ni les sidecars de service (`INDEX.md`, `_status.md`, `*.toc.json`,
-`_assets/`) — et on calcule leur SHA256. La sélection compare au ledger : une source
-absente ou au SHA différent est « à compiler » ; sinon elle est déjà à jour (idempotence).
+On liste les **fichiers de contenu** (`.pdf.txt` / `.epub.txt` / web `.md` /
+notes `.md`) — jamais les binaires, ni les sidecars de service (`INDEX.md`,
+`_status.md`, `*.toc.json`, `_assets/`, **et `*.src.md`** pour les notes) — et
+on calcule leur SHA256. La sélection compare au ledger : une source absente
+ou au SHA différent est « à compiler » ; sinon elle est déjà à jour
+(idempotence).
+
+> ⚠️ **Piège principal `notes`** : `_CONTENT_EXT["notes"] = ".md"` matche
+> `<base>.src.md` ET `<base>.md` (les deux finissent par `.md`). L'original
+> immuable `.src.md` est un sidecar — il NE DOIT PAS apparaître dans la
+> worklist, sinon double compilation d'une même note. Le filtre `_SKIP_NAMES`
+> est étendu dynamiquement pour exclure `*.src.md` du scan. Cf. design
+> `route-md-inbox-notes::Décision 2`.
 
 Le digest de statut (`status_digest`) expose, **par source** et de manière
 machine-lisible, le statut de compilation dérivé du ledger et de `_status.md` :
@@ -27,7 +36,7 @@ import ledger as ledger_mod
 import status_table
 
 #: Extension du fichier de contenu par type de document.
-_CONTENT_EXT = {"pdfs": ".pdf.txt", "epubs": ".epub.txt", "web": ".md"}
+_CONTENT_EXT = {"pdfs": ".pdf.txt", "epubs": ".epub.txt", "web": ".md", "notes": ".md"}
 _SKIP_NAMES = {"INDEX.md", "_status.md", ".DS_Store"}
 
 #: Statut final d'une source dans le digest (cf. spec `compile-source`).
@@ -57,7 +66,12 @@ def _rel(path: Path, work_root: Path) -> str:
 
 
 def scan_content(cfg) -> list[ContentFile]:
-    """Liste tous les fichiers de contenu de `raw/{pdfs,epubs,web}` avec leur SHA."""
+    """Liste tous les fichiers de contenu de `raw/{pdfs,epubs,web,notes}` avec leur SHA.
+
+    Exclut explicitement les sidecars `*.src.md` (notes) : seul le `.md` dérivé
+    est compilable. Le `.src.md` est la matière immuable — l'original verbatim
+    jamais compilé.
+    """
     out: list[ContentFile] = []
     work_root = cfg.work_root
     for doc_type, ext in _CONTENT_EXT.items():
@@ -68,6 +82,9 @@ def scan_content(cfg) -> list[ContentFile]:
             if not p.is_file() or p.name in _SKIP_NAMES or p.name.startswith("."):
                 continue
             if not p.name.endswith(ext):
+                continue
+            # ⚠️ notes : filtrer `*.src.md` (matière immuable, jamais compilée)
+            if p.name.endswith(".src.md"):
                 continue
             base = p.name[: -len(ext)]
             toc = type_dir / f"{base}.toc.json"

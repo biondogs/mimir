@@ -7,7 +7,7 @@ description: >
   source », « clippe cette page ». N'écrit que dans raw/ (confinement).
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, extraction, pdf, epub, ocr, scraping]
   hermes:
@@ -35,7 +35,7 @@ metadata:
 
 Pour déposer une nouvelle source dans le second cerveau. Trigger : « extrais ce PDF/EPUB/URL »,
 « ajoute cette source », « clippe cette page ». Une source peut aussi être **déposée dans `_inbox/`**
-(dropzone synchronisée surveillée — voie privilégiée du cron Hermes) ; les binaires y transitent avant
+(dropzone synchronisée surveillée — voie privilégiée du cron Hermes) ; les fichiers y transitent avant
 d'être déplacés vers `raw/<type>/`.
 
 ## Usage
@@ -47,8 +47,8 @@ python scripts/wiki_extract.py [SOURCE] [--lang fra+eng] [--dry-run]
 > `--config <wiki.config.json>` est **optionnel** : sans lui, le config est auto-découvert
 > (`$MIMIR_CONFIG` → `dossier du profil` → `~/.config/mimir/wiki.config.json` → `./wiki.config.json`).
 
-- **SOURCE absent** → scan de `_inbox/` (mode cron/curator) : tous les binaires déposés sont traités.
-- **SOURCE = chemin `.pdf`/`.epub`** → extraction de ce binaire.
+- **SOURCE absent** → scan de `_inbox/` (mode cron/curator) : tous les fichiers supportés sont traités.
+- **SOURCE = chemin `.pdf`/`.epub`/`.md`** → extraction de cette source.
 - **SOURCE = URL `http(s)`** → clipping web.
 
 ## Procédure
@@ -70,25 +70,38 @@ même si une lib manque). **Jamais d'invention de contenu** (§12.5) : si l'extr
   images du manifest → `_assets/`.
 - **Web/URL** : nettoyage (`trafilatura` → `bs4`+`markdownify` → stdlib) → markdown **inline**
   `<slug>-<AAAAMMJJ>.md` (frontmatter YAML) ; images localisées → `_assets/`, liens réécrits en relatif.
+- **Notes / `.md` déposé** (palier `route-md-inbox-notes`) : pass-through. Le `.md` est sa propre
+  matière source — il n'a pas de `.html` parent re-dérivable. L'orchestrateur écrit
+  `<base>.src.md` (original verbatim, immuable) + `<base>.md` (dérivation à frontmatter
+  normalisé `type: note`, `title`, `source?`, `created`, `tags: [clippings]`). Pas de sidecar
+  `.html`, pas de dédup URL. Le slug est dérivé du nom de fichier, pas du frontmatter.
 
 ### Flux `_inbox/` (orchestrateur)
 
 1. **Verrou** `wiki-sync` (mkdir hors `work_root`, §12.9 ; stub P1, vrai backend P4).
-2. Routage **par extension** (URL → web).
+2. Routage **par extension** (URL → web, `.md` → notes).
 3. `extract()` → calcul du **SHA du contenu**.
-4. **Dédup** : SHA déjà présent dans `_status.md` → binaire re-déposé **supprimé**, rien réécrit.
-5. Écritures (ordre : `_assets/` → contenu → `.toc.json` → `_status.md`), toutes **confinées**.
-6. **Move** du binaire `_inbox/` → `raw/<type>/` **après** écriture réussie (reprise sûre sur crash).
+4. **Dédup** : SHA déjà présent dans `_status.md` → fichier re-déposé **supprimé**, rien réécrit.
+   Dédup URL web avant la dédup SHA ; pas de dédup URL pour les notes.
+5. Écritures (ordre : `_assets/` → contenu → source immuable → `.toc.json` → `_status.md`), toutes
+   **confinées**.
+6. **Move** du fichier `_inbox/` → `raw/<type>/` **après** écriture réussie (reprise sûre sur
+   crash). Notes : move du `.md` (la matière immuable est copiée dans `<base>.src.md`).
 
-> **Immutabilité** : raw append-only, suffixage cohérent `-2` (binaire + `.txt` + `.toc.json`) ;
-> seule mutation tolérée = `_status.md` (SHA du **contenu**, pas du binaire).
+> **Immutabilité** : raw append-only, suffixage cohérent `-2` (binaire + `.txt` + `.toc.json`
+> pour les PDF/EPUB ; `.src.md` + `.md` pour les notes) ; seule mutation tolérée = `_status.md`
+> (SHA du **contenu**, pas du fichier source).
 
 > **Import du socle partagé** : résolu par chemin relatif (`../../_shared-references/scripts`) avec
 > repli sur la variable `MIMIR_SHARED`. Durcissement packaging Hermes prévu en Phase 5.
 
 ## Références
 
-- Formats raw + immutabilité + sidecars : spec `extract-source::extraction-immutable` + spec `mimir-invariants::append-only-raw` ; gabarits frontmatter : [`../_shared-references/FRONTMATTERS.md`](../_shared-references/FRONTMATTERS.md).
+- Formats raw + immutabilité + sidecars : spec `extract-source::extraction-immutable` + spec
+  `extract-source::routage-des-notes-markdown` + spec `mimir-invariants::append-only-raw` ;
+  gabarits frontmatter : [`../_shared-references/FRONTMATTERS.md`](../_shared-references/FRONTMATTERS.md).
 - Slug ASCII, NFD/NFC : [`../_shared-references/scripts/slug.py`](../_shared-references/scripts/slug.py).
 - Outillage (PyMuPDF, ocrmypdf, tesseract) : [`../_shared-references/TOOLING.md`](../_shared-references/TOOLING.md).
-- Spécification : `specs/extract-source` (dropzone-routing, extractor-pluggable-contract, extraction-immutable) + `specs/compile-source::karpathy-article-format` + `specs/mimir-invariants::append-only-raw`.
+- Spécification : `specs/extract-source` (dropzone-routing, extractor-pluggable-contract,
+  extraction-immutable, routage-des-notes-markdown) + `specs/compile-source::karpathy-article-format`
+  + `specs/mimir-invariants::append-only-raw`.

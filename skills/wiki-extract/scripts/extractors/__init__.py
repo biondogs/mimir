@@ -27,14 +27,21 @@ def doc_type_for(source: str | Path) -> str:
         return "pdfs"
     if ext == ".epub":
         return "epubs"
-    raise ExtractorError(f"Format non supporté : {source!r} (extensions : .pdf, .epub, ou URL http).")
+    if ext == ".md":
+        return "notes"
+    raise ExtractorError(
+        f"Format non supporté : {source!r} (extensions : .pdf, .epub, .md, ou URL http)."
+    )
 
 
 def is_supported(source: str | Path) -> bool:
-    """Vrai si `source` a un extracteur (URL http, `.pdf` ou `.epub`). Ne lève jamais.
+    """Vrai si `source` a un extracteur (URL http, `.pdf`, `.epub` ou `.md`). Ne lève jamais.
 
     Sert au tri de la dropzone `_inbox/` : un fichier non supporté (README, .txt,
-    artefact OS…) doit être ignoré, pas faire échouer le scan.
+    artefact OS…) doit être ignoré, pas faire échouer le scan. **Note** : un `.md`
+    est supporté — un `README.md` déposé dans `_inbox/` devient une note (la
+    discipline `_inbox/` est une responsabilité utilisateur, cf. spec
+    `extract-source` « Routage des notes markdown »).
     """
     try:
         doc_type_for(source)
@@ -58,4 +65,8 @@ def get_extractor(source: str | Path):
         from . import epub
 
         return epub
+    if dt == "notes":
+        from . import markdown
+
+        return markdown
     raise ExtractorError(f"Aucun extracteur pour le type {dt!r}.")  # pragma: no cover

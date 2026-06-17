@@ -74,12 +74,17 @@ def _today() -> date:
 
 # --- nommage ---------------------------------------------------------------
 def _slug_base(source: str | Path, result) -> str:
-    """Slug ASCII de base (sans extension). Binaire : nom de fichier ; web : titre."""
+    """Slug ASCII de base (sans extension). Binaire : nom de fichier ; web : titre.
+
+    Pour les notes, le nom de fichier du `.md` déposé est la **source de
+    vérité** du slug (le `title:` du frontmatter peut être tout autre chose,
+    c'est l'utilisateur qui a nommé le fichier intentionnellement).
+    """
     if extractors.is_url(source):
         cand = result.metadata.get("title") or str(source)
     else:
         name = Path(str(source)).name
-        for ext in (".pdf", ".epub"):
+        for ext in (".pdf", ".epub", ".md"):
             if name.lower().endswith(ext):
                 name = name[: -len(ext)]
                 break
@@ -101,6 +106,28 @@ def _web_frontmatter(metadata: dict) -> str:
         "tags: [clippings]\n"
         "---\n\n"
     )
+
+
+def _note_frontmatter(metadata: dict) -> str:
+    """Frontmatter YAML d'une note déposée (palier `route-md-inbox-notes`).
+
+    `type: note` (distinct de `web`, cf. spec `extract-source`), `title` /
+    `created` toujours présents, `source?` si le `.md` original en portait
+    (jamais inventé), `tags: [clippings]` comme pour les clippings web.
+    """
+    title = (metadata.get("title") or "").replace('"', "'")
+    created = metadata.get("created") or _today().isoformat()
+    src = metadata.get("source")
+    parts = [
+        "---\n",
+        f'title: "{title}"\n',
+        "type: note\n",
+        f"created: {created}\n",
+    ]
+    if isinstance(src, str) and src.strip():
+        parts.append(f"source: {src.strip()}\n")
+    parts.append("tags: [clippings]\n---\n\n")
+    return "".join(parts)
 
 
 def _find_ingested_url(type_dir: Path, url: str) -> str | None:
@@ -164,6 +191,8 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
     # Un même article re-clippé (Obsidian Web Clipper / MarkDownload) varie son
     # frontmatter → SHA différent. La règle d'or : la première copie ingérée gagne
     # (`raw/` est append-only) ; on n'écrase pas, on signale le doublon d'URL.
+    # Les `notes` n'ont PAS de dédup URL (le `source:` est optionnel et la
+    # dédup inter-dossiers `web/↔notes/` est hors scope, cf. Open Issue).
     if doc_type == "web":
         url = result.metadata.get("source") or (source if extractors.is_url(source) else "")
         if url and (existing := _find_ingested_url(type_dir, url)):
@@ -188,6 +217,14 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
         # Le triplet web = `<slug>-<date>.html` (matière immuable) +
         # `<slug>-<date>.md` (markdown dérivé). Le suffixage `-N` est
         # partagé entre les deux (cf. palier v2→v3 `vault-migration`).
+        exts = [result.content_ext]
+        if result.source_content is not None and result.source_ext:
+            exts = [result.source_ext] + exts
+    elif doc_type == "notes":
+        # Notes : `<base>.src.md` (verbatim immuable) + `<base>.md` (frontmatter
+        # normalisé). Pas de date, pas de `.toc.json` (la matière est déjà
+        # markdown, pas de chapitrage à dériver — le suffixage `-N` est partagé
+        # entre les deux fichiers du triplet, cohérent avec le triplet web).
         exts = [result.content_ext]
         if result.source_content is not None and result.source_ext:
             exts = [result.source_ext] + exts
@@ -217,20 +254,26 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
 
     if doc_type == "web":
         raw_content = _web_frontmatter(result.metadata) + raw_content
+    elif doc_type == "notes":
+        # Notes : on ré-encapsule avec un frontmatter **normalisé** (`type: note`,
+        # `title`, `source?`, `created`, `tags: [clippings]`). L'original verbatim
+        # reste dans le `.src.md` adjacent — la normalisation ne détruit donc rien.
+        raw_content = _note_frontmatter(result.metadata) + raw_content
 
     iohelpers.atomic_write_text(content_path, raw_content, work_root=work_root)
 
-    # --- source immuable (web : .html brut à côté du .md dérivé) ---------
+    # --- source immuable (web : .html brut à côté du .md dérivé ;
+    #                        notes : .src.md verbatim à côté du .md normalisé) -
     # Analogue du `.pdf` binaire : la matière brute est conservée à côté du
-    # dérivé, et le `.md` peut être re-calculé à partir du `.html` sans
-    # refetch (cf. palier `vault-migration` v2→v3, spec `extract-source`).
-    if doc_type == "web" and result.source_content is not None and result.source_ext:
+    # dérivé, et le `.md` peut être re-calculé à partir de la matière immuable
+    # sans nouveau dépôt (cf. palier `route-md-inbox-notes`, spec `extract-source`).
+    if doc_type in ("web", "notes") and result.source_content is not None and result.source_ext:
         source_path = type_dir / f"{final_base}.{result.source_ext}"
         iohelpers.atomic_write_bytes(
             source_path, result.source_content, work_root=work_root
         )
 
-    if doc_type != "web":
+    if doc_type not in ("web", "notes"):
         toc = {
             "title": result.metadata.get("title", final_base),
             "source": str((type_dir / f"{final_base}.{_BIN_EXT[doc_type]}").relative_to(work_root)),
@@ -269,9 +312,18 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
     status_table.save_status(type_dir / "_status.md", doc_type, rows, work_root=work_root)
 
     # --- move/copie du binaire APRÈS écriture réussie (reprise sûre) ------
-    if doc_type != "web":
+    # PDF/EPUB : binaire vers `raw/<type>/<base>.{pdf,epub}` (move depuis inbox,
+    # copie si binaire déjà ailleurs).
+    # Notes : le `.md` lui-même est la matière source — move depuis `_inbox/`
+    # (analogue d'un binaire). Web : pas de move (fetch réseau, pas de fichier local).
+    if doc_type in ("pdfs", "epubs"):
         dest_bin = type_dir / f"{final_base}.{_BIN_EXT[doc_type]}"
         _place_binary(Path(source), dest_bin, from_inbox=from_inbox, work_root=work_root)
+    elif doc_type == "notes":
+        if from_inbox:
+            # Move le `.md` déposé — il a déjà été persisté dans `raw/notes/<base>.src.md`
+            # (la matière immuable), le supprimer de `_inbox/` est l'étape de reprise sûre.
+            Path(source).unlink(missing_ok=True)
 
     return Outcome(str(source), doc_type, "extrait", content_path, suffixed)
 
@@ -279,10 +331,11 @@ def process_source(cfg, source, *, from_inbox: bool, lang: str, dry_run: bool) -
 def scan_inbox(cfg) -> tuple[list[Path], list[Path]]:
     """Trie `_inbox/` (plat) : `(à_extraire, ignorés)`.
 
-    `à_extraire` = binaires supportés (`.pdf`/`.epub`). `ignorés` = fichiers présents
-    mais sans extracteur (README, `.txt`, etc.) : ils ne doivent PAS faire échouer le
-    scan (sinon, en cron, non-ingestion silencieuse des sources valides). Les fichiers
-    cachés et `.DS_Store` sont écartés en amont (ni traités ni signalés).
+    `à_extraire` = fichiers supportés (`.pdf`/`.epub`/`.md`). `ignorés` = fichiers
+    présents mais sans extracteur (`.txt`, artefacts OS) : ils ne doivent PAS
+    faire échouer le scan (sinon, en cron, non-ingestion silencieuse des
+    sources valides). Les fichiers cachés et `.DS_Store` sont écartés en
+    amont (ni traités ni signalés).
     """
     inbox = cfg.INBOX
     if not inbox.is_dir():
@@ -323,7 +376,7 @@ def run(cfg, source, *, lang: str, dry_run: bool, skip_sync: bool = False) -> li
                 for p in to_extract
             ]
             outcomes += [
-                Outcome(str(p), "-", "ignored", message="format non supporté (ni .pdf ni .epub)")
+                Outcome(str(p), "-", "ignored", message="format non supporté (ni .pdf, ni .epub, ni .md)")
                 for p in skipped
             ]
 

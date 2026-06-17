@@ -7,7 +7,7 @@ description: >
   grille de lecture de cet ouvrage », « régénère la grille ». Borné à work_root.
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, reading-grid, navigation]
   hermes:

@@ -9,7 +9,7 @@ description: >
   écritures bornées à work_root et atomiques.
 license: PolyForm-Noncommercial-1.0.0
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
   author: Vivian MAES
   tags: [knowledge-base, obsidian, index, audit]
   hermes:
